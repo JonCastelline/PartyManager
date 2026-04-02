@@ -16,7 +16,7 @@ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS “AS IS” 
 -- Automates invites, trust management, and leveling coordination.
 
 _addon.name = 'PartyManager'
-_addon.author = 'Frodobald + Broguypal'
+_addon.author = 'Frodobald + BGP'
 _addon.version = '1.2.0'
 _addon.commands = {'partymanager', 'pm'}
 
