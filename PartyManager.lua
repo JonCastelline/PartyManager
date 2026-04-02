@@ -1,8 +1,22 @@
+--[[
+Copyright 2026 Frodobald
+
+Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.
+
+3. Neither the name of the copyright holder nor the names of its contributors may be used to endorse or promote products derived from this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS “AS IS” AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+]]
+
 -- PartyManager Addon for Windower 4
 -- Automates invites, trust management, and leveling coordination.
 
 _addon.name = 'PartyManager'
-_addon.author = 'Frodobald'
+_addon.author = 'Frodobald + Broguypal'
 _addon.version = '1.2.0'
 _addon.commands = {'partymanager', 'pm'}
 
@@ -64,6 +78,7 @@ local last_status = 0
 local initial_pc_count = 1
 local invite_time = 0
 local trust_summon_attempt_time = 0
+local last_pc_count = 1
 
 -- Party member data tracking
 local party_data = {}
@@ -331,6 +346,15 @@ windower.register_event('addon command', function(command, ...)
                 end
             end
         end
+    elseif command == 'resummon' then
+        local val = args[1] and args[1]:lower()
+        if val == 'on' then
+            settings.auto_trust_resummon = true
+        elseif val == 'off' then
+            settings.auto_trust_resummon = false
+        end
+        settings:save()
+        windower.add_to_chat(200, 'PartyManager: Auto Trust Resummon: ' .. (settings.auto_trust_resummon and 'ON' or 'OFF'))
     elseif command == 'reset' then
         current_state = states.IDLE
         target_player = nil
@@ -424,8 +448,27 @@ end)
 
 windower.register_event('prerender', function()
     pm_ui.tick()
-    if not settings.enabled or current_state == states.IDLE then return end
+    
     local now = os.clock()
+    local current_pc_count = get_pc_count()
+    
+    -- Background monitoring for PC departures
+    if settings.enabled then
+        if current_pc_count < last_pc_count then
+            if settings.auto_trust_resummon and current_state == states.IDLE then
+                windower.add_to_chat(200, 'PartyManager: Player left the party. Initiating reconfiguration.')
+                target_player = nil -- Ensure we know it's a resummon
+                current_state = states.STOPPING_PULLER
+                last_action_time = now
+                -- Default to skipping cooldown; will be reset if we sync
+                invite_time = os.time() - 120
+            end
+        end
+        -- Always update last_pc_count to keep it in sync with the current party state
+        last_pc_count = current_pc_count
+    end
+
+    if not settings.enabled or current_state == states.IDLE then return end
     if now - last_action_time < 2 then return end
     local player = windower.ffxi.get_player()
     if not player then return end
@@ -462,7 +505,21 @@ windower.register_event('prerender', function()
             windower.send_command('input /returntrust all')
             last_action_time = now + 3
         else
-            current_state = states.INVITING
+            if target_player then
+                current_state = states.INVITING
+            else
+                -- If target_player is nil, it's a resummon from a departure.
+                -- Check if we should re-sync.
+                if settings.auto_level_sync then
+                    current_state = states.TARGETING_FOR_SYNC
+                else
+                    current_state = states.SUMMONING_TRUSTS
+                    windower.add_to_chat(200, 'PartyManager: Summoning trusts.')
+                    trust_summon_index = 1
+                    trust_summon_attempt_time = 0
+                    trust_summon_initial = false
+                end
+            end
             last_action_time = now
         end
 
@@ -478,12 +535,14 @@ windower.register_event('prerender', function()
         local joined = false
         for i = 1, 5 do
             local m = party['p' .. i]
+            -- Only count as "joined" if they are in the party AND near (m.mob is non-nil)
             if m and normalize(m.name) == target_player and m.mob then
                 joined = true
                 windower.add_to_chat(200, 'PartyManager: '.. target_player .. ' has joined.')
                 break
             end
         end
+
         if joined then
             if settings.auto_level_sync then
                 current_state = states.TARGETING_FOR_SYNC
@@ -492,6 +551,17 @@ windower.register_event('prerender', function()
                 windower.add_to_chat(200, 'PartyManager: Auto-sync disabled. Skipping to trusts.')
             end
             last_action_time = now
+        else
+            -- Check for timeout (10 minutes)
+            local elapsed = os.time() - invite_time
+            if elapsed > 600 then
+                windower.add_to_chat(200, 'PartyManager: Wait timeout (10m) reached for ' .. target_player .. '. Giving up.')
+                target_player = nil
+                current_state = states.SUMMONING_TRUSTS
+                last_action_time = now
+            elseif math.fmod(elapsed, 60) == 0 and elapsed > 0 then
+                windower.add_to_chat(200, 'PartyManager: Still waiting for ' .. target_player .. ' to join (' .. (600 - elapsed) .. 's remaining).')
+            end
         end
 
     elseif current_state == states.TARGETING_FOR_SYNC then
@@ -528,6 +598,8 @@ windower.register_event('prerender', function()
         if sync_target_name then
             windower.add_to_chat(200, 'PartyManager: Injecting Level Sync packet (0x077) for ' .. sync_target_name .. '.')
             send_level_sync_packet(sync_target_name)
+            -- Syncing resets the trust cooldown timer!
+            invite_time = os.time()
         else
             windower.add_to_chat(200, 'PartyManager: Sync mode set to none or no valid target found. Skipping sync.')
         end
@@ -542,19 +614,17 @@ windower.register_event('prerender', function()
         if player.status == 4 then last_status = 4 return end
         if last_status == 4 then last_status = 0 last_action_time = now + 4 return end
 
-        if initial_pc_count == 1 then
-            if trust_summon_initial then
-                windower.add_to_chat(200, 'PartyManager: There is a 2 minute cooldown for Trusts for a new party. Starting timer.')
-                trust_summon_initial = false
+        if trust_summon_initial then
+            windower.add_to_chat(200, 'PartyManager: There is a 2 minute cooldown for Trusts after party changes. Starting timer.')
+            trust_summon_initial = false
+        end
+        local elapsed = os.time() - invite_time
+        if elapsed < 120 then
+            if math.fmod(elapsed, 30) == 0 then
+                windower.add_to_chat(200, 'PartyManager: Waiting for trust cooldown (' .. (120 - elapsed) .. 's remaining).')
             end
-            local elapsed = os.time() - invite_time
-            if elapsed < 120 then
-                if math.fmod(elapsed, 30) == 0 then
-                    windower.add_to_chat(200, 'PartyManager: Waiting for new party trust cooldown (' .. (120 - elapsed) .. 's remaining).')
-                end
-                last_action_time = now + 5
-                return
-            end
+            last_action_time = now + 5
+            return
         end
 
         local pc_count = get_pc_count()
