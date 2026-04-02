@@ -9,6 +9,7 @@ _addon.commands = {'partymanager', 'pm'}
 require('luau')
 local config = require('config')
 local packets = require('packets')
+local pm_ui = require('partymanager_ui')
 
 -- Default settings - Using strings for trust lists to ensure 100% reliability in persistence
 local defaults = {}
@@ -26,10 +27,12 @@ defaults.trust_lists = {
     p2 = "", -- 2 PCs
     p3 = "", -- 3 PCs
     p4 = "", -- 4 PCs
-    p5 = "", -- 5 PCs
 }
-defaults.sync_mode = 'sender' -- 'sender', 'self', or 'none'
+defaults.sync_mode = 'sender' -- 'sender', 'fixed', or 'none'
+defaults.sync_target = nil -- Fixed target name for 'fixed' mode
 defaults.reply_msg = "Wait a moment, preparing for invite..."
+defaults.auto_level_sync = false
+defaults.auto_trust_resummon = false 
 
 local settings = config.load(defaults)
 
@@ -174,6 +177,20 @@ local function get_trust_list(pc_count)
     return clean_list
 end
 
+-- UI INITIALIZATION
+----------------------------------------------------------------------
+pm_ui.init(
+    settings,
+    function()
+        return {
+            name = state_names[current_state] or 'UNKNOWN',
+            target = target_player,
+        }
+    end,
+    get_pc_count,
+    function() return windower.ffxi.get_party() end
+)
+
 ----------------------------------------------------------------------
 -- COMMAND HANDLER
 ----------------------------------------------------------------------
@@ -269,6 +286,16 @@ windower.register_event('addon command', function(command, ...)
     elseif command == 'status' then
         windower.add_to_chat(200, 'PartyManager Status: ' .. (settings.enabled and 'Enabled' or 'Disabled'))
         windower.add_to_chat(200, 'Current State: ' .. (state_names[current_state] or 'UNKNOWN'))
+    elseif command == 'ui' then
+        pm_ui.toggle('main')
+    elseif command == 'ui_refresh' then
+        pm_ui.request_refresh()
+    elseif command == 'puller_stop_now' then
+        send_puller_cmd(settings.puller.stop_cmd)
+        windower.add_to_chat(200, 'PartyManager: Puller stop sent.')
+    elseif command == 'puller_start_now' then
+        send_puller_cmd(settings.puller.start_cmd)
+        windower.add_to_chat(200, 'PartyManager: Puller start sent.')
     else
         windower.add_to_chat(200, 'PartyManager: Unknown command. Options: on, off, whitelist add/rm, password, puller name/stop/start, status, reset, trust <pc> add/clear/list.')
     end
@@ -313,6 +340,7 @@ windower.register_event('incoming chunk', function(id, data)
 end)
 
 windower.register_event('prerender', function()
+    pm_ui.tick()
     if not settings.enabled or current_state == states.IDLE then return end
     local now = os.clock()
     if now - last_action_time < 2 then return end
@@ -452,4 +480,8 @@ windower.register_event('prerender', function()
         last_action_time = now
         windower.add_to_chat(200, 'PartyManager: Process complete.')
     end
+end)
+
+windower.register_event('unload', function()
+    pm_ui.shutdown()
 end)
