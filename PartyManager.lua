@@ -312,6 +312,16 @@ windower.register_event('addon command', function(command, ...)
                 windower.add_to_chat(200, 'PartyManager: Please specify a sync target name.')
             end
         end
+    elseif command == 'limit' then
+        local val = tonumber(args[1])
+        if val and val >= 1 and val <= 6 then
+            settings.max_pcs = val
+            settings:save()
+            windower.add_to_chat(200, 'PartyManager: Max PCs set to ' .. val .. '.')
+            pm_ui.update()
+        else
+            windower.add_to_chat(200, 'PartyManager: Invalid limit. Use 1-6.')
+        end
     elseif command == 'password' then
         local val = args[1]
         settings.password = val
