@@ -64,6 +64,7 @@ local last_status = 0
 local initial_pc_count = 1
 local invite_time = 0
 local trust_summon_attempt_time = 0
+local last_pc_count = 1
 
 -- Party member data tracking
 local party_data = {}
@@ -331,6 +332,15 @@ windower.register_event('addon command', function(command, ...)
                 end
             end
         end
+    elseif command == 'resummon' then
+        local val = args[1] and args[1]:lower()
+        if val == 'on' then
+            settings.auto_trust_resummon = true
+        elseif val == 'off' then
+            settings.auto_trust_resummon = false
+        end
+        settings:save()
+        windower.add_to_chat(200, 'PartyManager: Auto Trust Resummon: ' .. (settings.auto_trust_resummon and 'ON' or 'OFF'))
     elseif command == 'reset' then
         current_state = states.IDLE
         target_player = nil
@@ -424,8 +434,27 @@ end)
 
 windower.register_event('prerender', function()
     pm_ui.tick()
-    if not settings.enabled or current_state == states.IDLE then return end
+    
     local now = os.clock()
+    local current_pc_count = get_pc_count()
+    
+    -- Background monitoring for PC departures
+    if settings.enabled then
+        if current_pc_count < last_pc_count then
+            if settings.auto_trust_resummon and current_state == states.IDLE then
+                windower.add_to_chat(200, 'PartyManager: Player left the party. Initiating reconfiguration.')
+                target_player = nil -- Ensure we know it's a resummon
+                current_state = states.STOPPING_PULLER
+                last_action_time = now
+                -- Default to skipping cooldown; will be reset if we sync
+                invite_time = os.time() - 120
+            end
+        end
+        -- Always update last_pc_count to keep it in sync with the current party state
+        last_pc_count = current_pc_count
+    end
+
+    if not settings.enabled or current_state == states.IDLE then return end
     if now - last_action_time < 2 then return end
     local player = windower.ffxi.get_player()
     if not player then return end
@@ -462,7 +491,21 @@ windower.register_event('prerender', function()
             windower.send_command('input /returntrust all')
             last_action_time = now + 3
         else
-            current_state = states.INVITING
+            if target_player then
+                current_state = states.INVITING
+            else
+                -- If target_player is nil, it's a resummon from a departure.
+                -- Check if we should re-sync.
+                if settings.auto_level_sync then
+                    current_state = states.TARGETING_FOR_SYNC
+                else
+                    current_state = states.SUMMONING_TRUSTS
+                    windower.add_to_chat(200, 'PartyManager: Summoning trusts.')
+                    trust_summon_index = 1
+                    trust_summon_attempt_time = 0
+                    trust_summon_initial = false
+                end
+            end
             last_action_time = now
         end
 
@@ -541,6 +584,8 @@ windower.register_event('prerender', function()
         if sync_target_name then
             windower.add_to_chat(200, 'PartyManager: Injecting Level Sync packet (0x077) for ' .. sync_target_name .. '.')
             send_level_sync_packet(sync_target_name)
+            -- Syncing resets the trust cooldown timer!
+            invite_time = os.time()
         else
             windower.add_to_chat(200, 'PartyManager: Sync mode set to none or no valid target found. Skipping sync.')
         end

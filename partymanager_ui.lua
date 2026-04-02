@@ -835,7 +835,7 @@ local function handle_click(key)
             ref_settings.auto_trust_resummon = not (ref_settings.auto_trust_resummon or false)
             ref_settings:save()
             local s = ref_settings.auto_trust_resummon and 'ON' or 'OFF'
-            windower.add_to_chat(200, 'PartyManager: Auto Trust Resummon ' .. s .. '. (Feature coming soon)')
+            windower.add_to_chat(200, 'PartyManager: Auto Trust Resummon ' .. s .. '.')
         end
 
     elseif key == 'picker_close' then
