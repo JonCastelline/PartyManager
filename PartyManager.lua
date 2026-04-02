@@ -478,12 +478,14 @@ windower.register_event('prerender', function()
         local joined = false
         for i = 1, 5 do
             local m = party['p' .. i]
+            -- Only count as "joined" if they are in the party AND near (m.mob is non-nil)
             if m and normalize(m.name) == target_player and m.mob then
                 joined = true
                 windower.add_to_chat(200, 'PartyManager: '.. target_player .. ' has joined.')
                 break
             end
         end
+
         if joined then
             if settings.auto_level_sync then
                 current_state = states.TARGETING_FOR_SYNC
@@ -492,6 +494,17 @@ windower.register_event('prerender', function()
                 windower.add_to_chat(200, 'PartyManager: Auto-sync disabled. Skipping to trusts.')
             end
             last_action_time = now
+        else
+            -- Check for timeout (10 minutes)
+            local elapsed = os.time() - invite_time
+            if elapsed > 600 then
+                windower.add_to_chat(200, 'PartyManager: Wait timeout (10m) reached for ' .. target_player .. '. Giving up.')
+                target_player = nil
+                current_state = states.SUMMONING_TRUSTS
+                last_action_time = now
+            elseif math.fmod(elapsed, 60) == 0 and elapsed > 0 then
+                windower.add_to_chat(200, 'PartyManager: Still waiting for ' .. target_player .. ' to join (' .. (600 - elapsed) .. 's remaining).')
+            end
         end
 
     elseif current_state == states.TARGETING_FOR_SYNC then
@@ -542,19 +555,17 @@ windower.register_event('prerender', function()
         if player.status == 4 then last_status = 4 return end
         if last_status == 4 then last_status = 0 last_action_time = now + 4 return end
 
-        if initial_pc_count == 1 then
-            if trust_summon_initial then
-                windower.add_to_chat(200, 'PartyManager: There is a 2 minute cooldown for Trusts for a new party. Starting timer.')
-                trust_summon_initial = false
+        if trust_summon_initial then
+            windower.add_to_chat(200, 'PartyManager: There is a 2 minute cooldown for Trusts after party changes. Starting timer.')
+            trust_summon_initial = false
+        end
+        local elapsed = os.time() - invite_time
+        if elapsed < 120 then
+            if math.fmod(elapsed, 30) == 0 then
+                windower.add_to_chat(200, 'PartyManager: Waiting for trust cooldown (' .. (120 - elapsed) .. 's remaining).')
             end
-            local elapsed = os.time() - invite_time
-            if elapsed < 120 then
-                if math.fmod(elapsed, 30) == 0 then
-                    windower.add_to_chat(200, 'PartyManager: Waiting for new party trust cooldown (' .. (120 - elapsed) .. 's remaining).')
-                end
-                last_action_time = now + 5
-                return
-            end
+            last_action_time = now + 5
+            return
         end
 
         local pc_count = get_pc_count()

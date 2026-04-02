@@ -827,7 +827,7 @@ local function handle_click(key)
             ref_settings.auto_level_sync = not (ref_settings.auto_level_sync or false)
             ref_settings:save()
             local s = ref_settings.auto_level_sync and 'ON' or 'OFF'
-            windower.add_to_chat(200, 'PartyManager: Auto Level Sync (lowest) ' .. s .. '. (Feature coming soon)')
+            windower.add_to_chat(200, 'PartyManager: Auto Level Sync ' .. s .. '.')
         end
 
     elseif key == 'auto_trust' then
