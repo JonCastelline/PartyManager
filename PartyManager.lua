@@ -554,18 +554,22 @@ windower.register_event('prerender', function()
 
     elseif current_state == states.WAITING_FOR_JOIN then
         local party = windower.ffxi.get_party()
-        local joined = false
+        local in_party = false
+        local in_range = false
+        
         for i = 1, 5 do
             local m = party['p' .. i]
-            -- Only count as "joined" if they are in the party AND near (m.mob is non-nil)
-            if m and normalize(m.name) == target_player and m.mob then
-                joined = true
-                windower.add_to_chat(200, 'PartyManager: '.. target_player .. ' has joined.')
+            if m and normalize(m.name) == target_player then
+                in_party = true
+                if m.mob then
+                    in_range = true
+                end
                 break
             end
         end
 
-        if joined then
+        if in_range then
+            windower.add_to_chat(200, 'PartyManager: '.. target_player .. ' has joined and is in range.')
             if settings.auto_level_sync then
                 current_state = states.TARGETING_FOR_SYNC
             else
@@ -574,15 +578,31 @@ windower.register_event('prerender', function()
             end
             last_action_time = now
         else
-            -- Check for timeout (10 minutes)
             local elapsed = os.time() - invite_time
-            if elapsed > 600 then
-                windower.add_to_chat(200, 'PartyManager: Wait timeout (10m) reached for ' .. target_player .. '. Giving up.')
+            
+            -- Scenario 1: Not in party after 3 minutes
+            if not in_party and elapsed > 180 then
+                windower.add_to_chat(200, 'PartyManager: ' .. target_player .. ' failed to accept invite within 3 minutes. Giving up.')
                 target_player = nil
                 current_state = states.SUMMONING_TRUSTS
                 last_action_time = now
+            
+            -- Scenario 2: In party but not in range after 10 minutes
+            elseif in_party and elapsed > 600 then
+                windower.add_to_chat(200, 'PartyManager: ' .. target_player .. ' failed to arrive within 10 minutes. Kicking and resuming.')
+                windower.send_command('input /pcmd kick ' .. target_player)
+                target_player = nil
+                current_state = states.SUMMONING_TRUSTS
+                last_action_time = now + 2
+                
+            -- Periodic status updates
             elseif math.fmod(elapsed, 60) == 0 and elapsed > 0 then
-                windower.add_to_chat(200, 'PartyManager: Still waiting for ' .. target_player .. ' to join (' .. (600 - elapsed) .. 's remaining).')
+                local reason = in_party and "arrive" or "accept invite"
+                local limit = in_party and 600 or 180
+                local remaining = limit - elapsed
+                if remaining >= 0 then
+                    windower.add_to_chat(200, 'PartyManager: Still waiting for ' .. target_player .. ' to ' .. reason .. ' (' .. remaining .. 's remaining).')
+                end
             end
         end
 
