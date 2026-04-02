@@ -1,34 +1,38 @@
 # PartyManager
 
-A Windower 4 addon for Final Fantasy XI that automates party management, particularly for AFK master leveling.
+A Windower 4 addon for Final Fantasy XI that automates party management, specifically designed for Master Leveling and coordination.
 
 ## Features
-- Automated invites based on whitelisted tells (+ optional password).
-- Coordination with a puller (self or alt via `//send`).
-- Dynamic trust management (dismisses trusts for invite, then re-summons based on new party size).
-- Level sync automation.
-- State-machine driven to handle combat and cooldowns.
+- **Automated Invitations:** Whitelist-based invitations triggered by Tells (with optional password protection).
+- **Dynamic Trust Management:** Automatically manages trust sets (1PC to 5PC) based on the number of players in the party.
+- **Auto Trust Resummon:** Monitors the party and automatically stops the puller, kills the current mob, and re-summons trusts if a player leaves.
+- **Master Level Sync:** Automated level sync using raw packet injection (0x077) for 100% reliability.
+- **Sync Modes:** Supports `sender` (sync to the person joining), `fixed` (sync to a specific character), or `lowest` (automatically finds the lowest Master Level in the party).
+- **Puller Coordination:** Coordinates with a puller (self or alt via `/console send`) to safely pause and resume pulling during party changes.
+- **Interactive UI:** A real-time UI for monitoring party status, Master Levels, and managing settings.
+- **Safety Logic:** State-machine driven to handle combat, trust cooldowns (2-minute timer), and player distance.
 
 ## Commands
 
 ### Basic Setup
 - `//pm on` / `off`: Enable or disable the addon.
+- `//pm ui`: Toggle the graphical interface.
 - `//pm whitelist add <name>`: Add a player to the whitelist.
-- `//pm whitelist rm <name>` or `//pm whitelist remove <name>`: Remove a player from the whitelist.
-- `//pm password <word>`: Set an optional trigger password.
+- `//pm whitelist rm <name>`: Remove a player from the whitelist.
+- `//pm password <word>`: Set a trigger password (visible in UI).
+- `//pm resummon on/off`: Toggle the Auto Trust Resummon feature.
 - `//pm status`: Check current state and settings.
 - `//pm reset`: Force reset the state machine to IDLE.
 
-### Coordination
-- `//pm puller name <name>`: Set the name of the character doing the pulling.
-- `//pm puller stop <command>`: Command to stop pulling (default: `//trust stop`).
-- `//pm puller start <command>`: Command to start pulling (default: `//trust start`).
-- `//pm limit <number>`: Set max number of human players allowed.
-- `//pm sync self|sender|none`: Set level sync mode.
+### Coordination & Sync
+- `//pm puller name <name>`: Set the name of the character pulling (supports alts).
+- `//pm sync mode sender|fixed|lowest|none`: Set how the addon chooses a sync target.
+- `//pm sync target <name>`: Set the specific target for `fixed` sync mode.
+- `//pm puller stop/start <command>`: Customize the puller commands (default: `//trust stop/start`).
 
 ### Trust Sets
-Define which trusts to summon based on how many human players (PCs) are in the party.
-- `//pm trust <pc_count> add <trust_name>`: Add a trust to the set for that PC count. For UC trusts and trusts with a II, add the name in quotes (e.g. //pm trust 2 add "Sylvie (UC)").
+Define which trusts to summon based on how many human players (PCs) are in the party (1PC to 5PC).
+- `//pm trust <pc_count> add <trust_name>`: Add a trust to the set for that PC count.
 - `//pm trust <pc_count> clear`: Clear the trust set for that PC count.
 
 Example:
@@ -38,14 +42,17 @@ Example:
 //pm trust 2 add "Kupipi"
 ```
 
-## How It Works
-1. Receives a tell from a whitelisted friend.
-2. Replies to them to wait.
-3. Stops the puller.
-4. Waits for all current monsters to die.
-5. Dismisses all trusts.
-6. Invites the friend.
-7. Waits for the friend to join and be in the same zone.
-8. Sets level sync.
-9. Summons trusts based on the new PC count.
-10. Resumes the puller.
+## UI Functionality
+- **Live Party List:** Shows all members, their job, and their **Master Level**.
+- **Responsive Toggles:** Instant visual feedback for addon state, AutoSync, and AutoTrust.
+- **Interactive Pickers:** Click on "Puller," "Whitelist," or any "PC" count to open a side-panel for easy management.
+- **Auto-Truncation:** Handles long passwords and names gracefully within the interface.
+
+## How It Works (The Cycle)
+1. **Detection:** Receives a tell from a whitelisted player (matching password if set).
+2. **Safety:** Stops the puller and waits for the current mob to die.
+3. **Clearing:** Dismisses all current trusts.
+4. **Invite:** Sends the party invitation and waits up to 10 minutes for the player to join and be in range.
+5. **Sync:** Targets the chosen player and injects a 0x077 packet to trigger Level Sync.
+6. **Summon:** Waits for the 2-minute trust cooldown (if a sync occurred or party changed) and summons the appropriate trust set.
+7. **Resume:** Restarts the puller and returns to IDLE.
