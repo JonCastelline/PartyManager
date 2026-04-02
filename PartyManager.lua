@@ -27,8 +27,9 @@ defaults.trust_lists = {
     p2 = "", -- 2 PCs
     p3 = "", -- 3 PCs
     p4 = "", -- 4 PCs
+    p5 = ""  -- 5 PCs
 }
-defaults.sync_mode = 'sender' -- 'sender', 'fixed', or 'none'
+defaults.sync_mode = 'sender' -- 'sender', 'fixed', 'lowest', or 'none'
 defaults.sync_target = nil -- Fixed target name for 'fixed' mode
 defaults.reply_msg = "Wait a moment, preparing for invite..."
 defaults.auto_level_sync = false
@@ -45,9 +46,10 @@ local states = {
     DISMISSING_TRUSTS = 4,
     INVITING = 5,
     WAITING_FOR_JOIN = 6,
-    SYNCING = 7,
-    SUMMONING_TRUSTS = 8,
-    STARTING_PULLER = 9
+    TARGETING_FOR_SYNC = 7,
+    SYNCING = 8,
+    SUMMONING_TRUSTS = 9,
+    STARTING_PULLER = 10
 }
 
 local current_state = states.IDLE
@@ -62,6 +64,9 @@ local last_status = 0
 local initial_pc_count = 1
 local invite_time = 0
 local trust_summon_attempt_time = 0
+
+-- Party member data tracking
+local party_data = {}
 
 ----------------------------------------------------------------------
 -- HELPERS
@@ -177,6 +182,32 @@ local function get_trust_list(pc_count)
     return clean_list
 end
 
+local function get_lowest_ml_pc()
+    local party = windower.ffxi.get_party()
+    if not party then return nil end
+    
+    local lowest_ml = 999
+    local lowest_name = nil
+    
+    for i = 0, 5 do
+        local m = party['p' .. i]
+        if m and m.name and m.name ~= '' then
+            -- If mob info is available, check if it's an NPC (trust).
+            if not m.mob or not m.mob.is_npc then
+                local data = party_data[m.name]
+                if data and data.master_level and data.master_level >= 0 then
+                    if data.master_level < lowest_ml then
+                        lowest_ml = data.master_level
+                        lowest_name = m.name
+                    end
+                end
+            end
+        end
+    end
+    
+    return lowest_name
+end
+
 -- UI INITIALIZATION
 ----------------------------------------------------------------------
 pm_ui.init(
@@ -188,7 +219,8 @@ pm_ui.init(
         }
     end,
     get_pc_count,
-    function() return windower.ffxi.get_party() end
+    function() return windower.ffxi.get_party() end,
+    party_data
 )
 
 ----------------------------------------------------------------------
@@ -234,6 +266,27 @@ windower.register_event('addon command', function(command, ...)
             settings.puller.start_cmd = val
             settings:save()
             windower.add_to_chat(200, 'PartyManager: Puller start command set to ' .. val .. '.')
+        end
+    elseif command == 'sync' then
+        local sub = args[1] and args[1]:lower()
+        if sub == 'mode' then
+            local mode = args[2] and args[2]:lower()
+            if mode == 'sender' or mode == 'fixed' or mode == 'lowest' or mode == 'none' then
+                settings.sync_mode = mode
+                settings:save()
+                windower.add_to_chat(200, 'PartyManager: Sync mode set to ' .. mode .. '.')
+            else
+                windower.add_to_chat(200, 'PartyManager: Invalid sync mode. Use sender, fixed, lowest, or none.')
+            end
+        elseif sub == 'target' then
+            local target = normalize(args[2])
+            if target then
+                settings.sync_target = target
+                settings:save()
+                windower.add_to_chat(200, 'PartyManager: Sync target set to ' .. target .. '.')
+            else
+                windower.add_to_chat(200, 'PartyManager: Please specify a sync target name.')
+            end
         end
     elseif command == 'password' then
         local val = args[1]
@@ -301,11 +354,41 @@ windower.register_event('addon command', function(command, ...)
     end
 end)
 
+local function send_level_sync_packet(target_name)
+    -- Use raw injection for 0x077 (Party Settings/Level Sync).
+    -- 1-2: Header Placeholder (will be overwritten by inject_outgoing)
+    -- 3-4: Filler/Sequence (matches 1B 30 from successful capture)
+    local payload = string.char(0, 0, 0x1B, 0x30)
+    
+    -- 5-20: Name (16 bytes)
+    local name_part = target_name:sub(1, 16)
+    payload = payload .. name_part .. string.char(0):rep(16 - #name_part)
+    
+    -- 21-24: Command Tail (0x06 at offset 21)
+    payload = payload .. string.char(0, 0x06, 0, 0)
+    
+    windower.packets.inject_outgoing(0x077, payload)
+    return true
+end
+
 ----------------------------------------------------------------------
 -- STATE MACHINE
 ----------------------------------------------------------------------
 
 windower.register_event('incoming chunk', function(id, data)
+    -- Packet 0x0DD: Party Member Update (contains Master Level)
+    if id == 0x0DD then
+        local p = packets.parse('incoming', data)
+        if p and p.Name then
+            local name = p.Name
+            party_data[name] = party_data[name] or {}
+            party_data[name].master_level = p['Master Level']
+            party_data[name].main_level = p['Main job level']
+            party_data[name].main_job = p['Main job']
+            pm_ui.update() -- Refresh UI with new data
+        end
+    end
+
     if id == 0x017 and settings.enabled and current_state == states.IDLE then
         local p = packets.parse('incoming', data)
         local mode = p['Mode'] or p['mode']
@@ -402,18 +485,53 @@ windower.register_event('prerender', function()
             end
         end
         if joined then
+            if settings.auto_level_sync then
+                current_state = states.TARGETING_FOR_SYNC
+            else
+                current_state = states.SUMMONING_TRUSTS
+                windower.add_to_chat(200, 'PartyManager: Auto-sync disabled. Skipping to trusts.')
+            end
+            last_action_time = now
+        end
+
+    elseif current_state == states.TARGETING_FOR_SYNC then
+        local sync_target_name = nil
+        if settings.sync_mode == 'sender' then
+            sync_target_name = target_player
+        elseif settings.sync_mode == 'fixed' then
+            sync_target_name = settings.sync_target
+        elseif settings.sync_mode == 'lowest' then
+            sync_target_name = get_lowest_ml_pc()
+        end
+
+        if sync_target_name then
+            windower.add_to_chat(200, 'PartyManager: Targeting ' .. sync_target_name .. ' for level sync.')
+            windower.send_command('input /target ' .. sync_target_name)
             current_state = states.SYNCING
+            last_action_time = now + 1.5 -- Give it time to target
+        else
+            windower.add_to_chat(200, 'PartyManager: Sync mode set to none or no valid target found. Skipping sync.')
+            current_state = states.SUMMONING_TRUSTS
             last_action_time = now
         end
 
     elseif current_state == states.SYNCING then
+        local sync_target_name = nil
         if settings.sync_mode == 'sender' then
-            windower.add_to_chat(200, 'PartyManager: Level syncing to ' .. target_player .. '.')
-            windower.send_command('input /levelsync ' .. target_player)
-        elseif settings.sync_mode == 'self' then
-            windower.add_to_chat(200, 'PartyManager: Level syncing to self.')
-            windower.send_command('input /levelsync')
+            sync_target_name = target_player
+        elseif settings.sync_mode == 'fixed' then
+            sync_target_name = settings.sync_target
+        elseif settings.sync_mode == 'lowest' then
+            sync_target_name = get_lowest_ml_pc()
         end
+
+        if sync_target_name then
+            windower.add_to_chat(200, 'PartyManager: Injecting Level Sync packet (0x077) for ' .. sync_target_name .. '.')
+            send_level_sync_packet(sync_target_name)
+        else
+            windower.add_to_chat(200, 'PartyManager: Sync mode set to none or no valid target found. Skipping sync.')
+        end
+        
         current_state = states.SUMMONING_TRUSTS
         windower.add_to_chat(200, 'PartyManager: Summoning trusts.')
         trust_summon_index = 1
