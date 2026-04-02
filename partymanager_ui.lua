@@ -110,7 +110,7 @@ local BTN_KEYS = {
     'password_btn',
     'reset', 'puller_stop', 'puller_start',
     'whitelist_btn',
-    'trust_p0', 'trust_p1', 'trust_p2', 'trust_p3', 'trust_p4',
+    'trust_p1', 'trust_p2', 'trust_p3', 'trust_p4', 'trust_p5',
     'auto_sync', 'auto_trust',
     'picker_close', 'picker_prev', 'picker_next',
 }
@@ -147,6 +147,11 @@ end
 local function set_vis(n, v) windower.prim.set_visibility(n, v and true or false) end
 local function fw() return UI.width - 2 * UI.padding end
 local function safe_send(cmd) windower.send_command(cmd) end
+
+local function truncate(s, max_len)
+    if not s or #s <= max_len then return s end
+    return s:sub(1, max_len - 3) .. "..."
+end
 
 local function prefill_chat(text)
     windower.send_command('keyboard_type / ')
@@ -386,12 +391,7 @@ local function build_trust_data(pc_count)
 
     -- Party trusts not already in this list
     local trusts = get_party_trusts()
-    local max_trusts
-    if pc_count == 0 then
-        max_trusts = 5  -- solo: 5 trust slots
-    else
-        max_trusts = 5 - pc_count  -- e.g. 2 PCs = 3 trust slots
-    end
+    local max_trusts = 6 - pc_count
     local current_count = #items
     for _, name in ipairs(trusts) do
         if not in_list[name:lower()] and current_count < max_trusts then
@@ -484,10 +484,10 @@ local function compute_rects()
         r['whitelist_btn'] = {x = bx, y = cur_y, w = w, h = UI.btn_h}
         cur_y = cur_y + UI.btn_h + UI.gap
 
-        -- Row: [0PC] [1PC] [2PC] [3PC] [4PC]
+        -- Row: [1PC] [2PC] [3PC] [4PC] [5PC]
         local qw = math.floor((w - 4 * UI.gap) / 5)
-        for i = 0, 4 do
-            r['trust_p' .. i] = {x = bx + i*(qw + UI.gap), y = cur_y, w = qw, h = UI.btn_h}
+        for i = 1, 5 do
+            r['trust_p' .. i] = {x = bx + (i-1)*(qw + UI.gap), y = cur_y, w = qw, h = UI.btn_h}
         end
         cur_y = cur_y + UI.btn_h + UI.gap
 
@@ -616,14 +616,14 @@ local function apply_layout()
         if sync_mode == 'fixed' then
             local sync_target = ref_settings and ref_settings.sync_target or '(none)'
             show_btn('sync_target_btn', rects['sync_target_btn'], UI.btn_sync,
-                'Sync Target: ' .. sync_target .. ' (click to set)', UI.muted_color)
+                'Sync Target: ' .. truncate(sync_target, 10) .. ' (click to set)', UI.muted_color)
         else
             show_btn('sync_target_btn', nil)
         end
 
         -- Password button
         local pw = ref_settings and ref_settings.password
-        local pw_display = (pw and pw ~= '') and '****' or '(none)'
+        local pw_display = (pw and pw ~= '') and truncate(pw, 14) or '(none)'
         show_btn('password_btn', rects['password_btn'], UI.btn_password,
             'Password: ' .. pw_display .. '  (click to set)', UI.muted_color)
 
@@ -648,8 +648,8 @@ local function apply_layout()
             is_wl_open and UI.btn_open or UI.btn_equip,
             ('Whitelist (%d)'):format(wl_count), wl_count > 0 and UI.on_color or UI.text_color)
 
-        -- Trust list buttons 0PC..4PC
-        for i = 0, 4 do
+        -- Trust list buttons 1PC..5PC
+        for i = 1, 5 do
             local tkey = 'trust_p' .. i
             local pkey = 'p' .. tostring(i)
             local str = ref_settings and ref_settings.trust_lists and ref_settings.trust_lists[pkey] or ""
@@ -658,12 +658,8 @@ local function apply_layout()
                 for _ in str:gmatch('[^,]+') do count = count + 1 end
             end
             local is_active = picker_open and picker_type == tkey
-            local label
-            if i == 0 then
-                label = ('Solo(%d)'):format(count)
-            else
-                label = ('%dPC(%d)'):format(i, count)
-            end
+            local label = ('%dPC(%d)'):format(i, count)
+            
             show_btn(tkey, rects[tkey],
                 is_active and UI.btn_open or UI.btn_equip,
                 label,
@@ -693,7 +689,7 @@ local function apply_layout()
 
         for _, key in ipairs({'puller_btn','sync_mode','password_btn',
             'reset','puller_stop','puller_start',
-            'whitelist_btn','trust_p0','trust_p1','trust_p2','trust_p3','trust_p4',
+            'whitelist_btn','trust_p1','trust_p2','trust_p3','trust_p4','trust_p5',
             'auto_sync','auto_trust'}) do
             show_btn(key, nil)
         end
@@ -773,8 +769,11 @@ end
 ---------------------------------------------------------------------------
 local function handle_click(key)
     if key == 'toggle' then
-        local enabled = ref_settings and ref_settings.enabled
-        if enabled then safe_send('pm off') else safe_send('pm on') end
+        if ref_settings then
+            ref_settings.enabled = not ref_settings.enabled
+            if ref_settings.enabled then safe_send('pm on') else safe_send('pm off') end
+            M.update()
+        end
 
     elseif key == 'expand' then
         expanded = not expanded
@@ -899,7 +898,7 @@ local function handle_click(key)
                 end
                 ref_settings.trust_lists[pkey] = table.concat(new_list, ',')
                 ref_settings:save()
-                windower.add_to_chat(200, ('PartyManager: Removed %s from %s trust set.'):format(item.name, pc == 0 and 'Solo' or pc .. 'PC'))
+                windower.add_to_chat(200, ('PartyManager: Removed %s from %dPC trust set.'):format(item.name, pc))
 
             elseif item.type == 'add' then
                 local str = ref_settings.trust_lists[pkey] or ""
@@ -910,14 +909,14 @@ local function handle_click(key)
                         if name ~= "" then list[#list+1] = name end
                     end
                 end
-                local max_trusts = pc == 0 and 5 or (5 - pc)
+                local max_trusts = 6 - pc
                 if #list < max_trusts then
                     list[#list+1] = item.name
                     ref_settings.trust_lists[pkey] = table.concat(list, ',')
                     ref_settings:save()
-                    windower.add_to_chat(200, ('PartyManager: Added %s to %s trust set.'):format(item.name, pc == 0 and 'Solo' or pc .. 'PC'))
+                    windower.add_to_chat(200, ('PartyManager: Added %s to %dPC trust set.'):format(item.name, pc))
                 else
-                    windower.add_to_chat(200, ('PartyManager: %s trust set full (max %d).'):format(pc == 0 and 'Solo' or pc .. 'PC', max_trusts))
+                    windower.add_to_chat(200, ('PartyManager: %dPC trust set full (max %d).'):format(pc, max_trusts))
                 end
             end
             refresh_picker_data()
