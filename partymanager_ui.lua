@@ -77,6 +77,7 @@ local ref_settings    -- reference to PartyManager settings table
 local ref_state_fn    -- function() returning { name, target }
 local ref_pc_count_fn -- function() returning current PC count
 local ref_party_fn    -- function() returning windower.ffxi.get_party()
+local ref_party_data  -- reference to PartyManager party_data table
 
 local built = false
 local expanded = true
@@ -105,7 +106,7 @@ local prims = {
 
 local BTN_KEYS = {
     'toggle', 'expand',
-    'puller_btn', 'sync_mode',
+    'puller_btn', 'sync_mode', 'sync_target_btn',
     'password_btn',
     'reset', 'puller_stop', 'puller_start',
     'whitelist_btn',
@@ -463,6 +464,11 @@ local function compute_rects()
         r['sync_mode']  = {x = bx + hw + UI.gap, y = cur_y, w = hw, h = UI.btn_h}
         cur_y = cur_y + UI.btn_h + UI.gap
 
+        if ref_settings and ref_settings.sync_mode == 'fixed' then
+            r['sync_target_btn'] = {x = bx, y = cur_y, w = w, h = UI.btn_h}
+            cur_y = cur_y + UI.btn_h + UI.gap
+        end
+
         -- Row: [Password: ****]
         r['password_btn'] = {x = bx, y = cur_y, w = w, h = UI.btn_h}
         cur_y = cur_y + UI.btn_h + UI.gap
@@ -577,7 +583,14 @@ local function apply_layout()
             if slot.name then
                 local prefix = (i == 0) and 'P0' or ('P' .. i)
                 local suffix = slot.is_trust and ' (Trust)' or ''
-                local label = ('%s: %s%s'):format(prefix, slot.name, suffix)
+                
+                -- Check for Master Level in our tracked data
+                local ml_str = ""
+                if ref_party_data and ref_party_data[slot.name] and ref_party_data[slot.name].master_level then
+                    ml_str = " [ML" .. tostring(ref_party_data[slot.name].master_level) .. "]"
+                end
+                
+                local label = ('%s: %s%s%s'):format(prefix, slot.name, suffix, ml_str)
                 local color = slot.is_trust and UI.trust_color or UI.party_color
                 show_info_h(skey, sy, UI.party_row_h, label, color)
             else
@@ -598,6 +611,15 @@ local function apply_layout()
         local sync_mode = ref_settings and ref_settings.sync_mode or 'sender'
         show_btn('sync_mode', rects['sync_mode'], UI.btn_sync,
             'Sync: ' .. sync_mode, UI.text_color)
+
+        -- Sync target button (shown if mode is fixed)
+        if sync_mode == 'fixed' then
+            local sync_target = ref_settings and ref_settings.sync_target or '(none)'
+            show_btn('sync_target_btn', rects['sync_target_btn'], UI.btn_sync,
+                'Sync Target: ' .. sync_target .. ' (click to set)', UI.muted_color)
+        else
+            show_btn('sync_target_btn', nil)
+        end
 
         -- Password button
         local pw = ref_settings and ref_settings.password
@@ -765,8 +787,9 @@ local function handle_click(key)
     elseif key == 'sync_mode' then
         local current = ref_settings and ref_settings.sync_mode or 'sender'
         local next_mode
-        if current == 'sender' then next_mode = 'self'
-        elseif current == 'self' then next_mode = 'none'
+        if current == 'sender' then next_mode = 'fixed'
+        elseif current == 'fixed' then next_mode = 'lowest'
+        elseif current == 'lowest' then next_mode = 'none'
         else next_mode = 'sender'
         end
         if ref_settings then
@@ -774,6 +797,9 @@ local function handle_click(key)
             ref_settings:save()
             windower.add_to_chat(200, 'PartyManager: Sync mode set to ' .. next_mode .. '.')
         end
+
+    elseif key == 'sync_target_btn' then
+        prefill_chat('//pm sync target ')
 
     elseif key == 'password_btn' then
         prefill_chat('//pm password ')
@@ -997,11 +1023,12 @@ end
 ---------------------------------------------------------------------------
 -- Public API
 ---------------------------------------------------------------------------
-function M.init(settings_ref, state_fn, pc_count_fn, party_fn)
+function M.init(settings_ref, state_fn, pc_count_fn, party_fn, party_data_ref)
     ref_settings    = settings_ref
     ref_state_fn    = state_fn
     ref_pc_count_fn = pc_count_fn
     ref_party_fn    = party_fn
+    ref_party_data  = party_data_ref
 end
 
 function M.request_refresh()
