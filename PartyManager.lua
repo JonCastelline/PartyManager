@@ -250,10 +250,12 @@ windower.register_event('addon command', function(command, ...)
         settings.enabled = true
         settings:save()
         windower.add_to_chat(200, 'PartyManager: Enabled.')
+        pm_ui.update()
     elseif command == 'off' then
         settings.enabled = false
         settings:save()
         windower.add_to_chat(200, 'PartyManager: Disabled.')
+        pm_ui.update()
     elseif command == 'whitelist' then
         local sub = args[1] and args[1]:lower()
         local name = normalize(args[2])
@@ -261,10 +263,12 @@ windower.register_event('addon command', function(command, ...)
             settings.whitelist:add(name)
             settings:save()
             windower.add_to_chat(200, 'PartyManager: Added ' .. name .. ' to whitelist.')
+            pm_ui.update()
         elseif sub == 'rm' and name then
             settings.whitelist:remove(name)
             settings:save()
             windower.add_to_chat(200, 'PartyManager: Removed ' .. name .. ' from whitelist.')
+            pm_ui.update()
         end
     elseif command == 'puller' then
         local sub = args[1] and args[1]:lower()
@@ -273,14 +277,17 @@ windower.register_event('addon command', function(command, ...)
             settings.puller.name = val
             settings:save()
             windower.add_to_chat(200, 'PartyManager: Puller set to ' .. (val or 'Self') .. '.')
+            pm_ui.update()
         elseif sub == 'stop' then
             settings.puller.stop_cmd = val
             settings:save()
             windower.add_to_chat(200, 'PartyManager: Puller stop command set to ' .. val .. '.')
+            pm_ui.update()
         elseif sub == 'start' then
             settings.puller.start_cmd = val
             settings:save()
             windower.add_to_chat(200, 'PartyManager: Puller start command set to ' .. val .. '.')
+            pm_ui.update()
         end
     elseif command == 'sync' then
         local sub = args[1] and args[1]:lower()
@@ -290,6 +297,7 @@ windower.register_event('addon command', function(command, ...)
                 settings.sync_mode = mode
                 settings:save()
                 windower.add_to_chat(200, 'PartyManager: Sync mode set to ' .. mode .. '.')
+                pm_ui.update()
             else
                 windower.add_to_chat(200, 'PartyManager: Invalid sync mode. Use sender, fixed, lowest, or none.')
             end
@@ -299,6 +307,7 @@ windower.register_event('addon command', function(command, ...)
                 settings.sync_target = target
                 settings:save()
                 windower.add_to_chat(200, 'PartyManager: Sync target set to ' .. target .. '.')
+                pm_ui.update()
             else
                 windower.add_to_chat(200, 'PartyManager: Please specify a sync target name.')
             end
@@ -308,6 +317,7 @@ windower.register_event('addon command', function(command, ...)
         settings.password = val
         settings:save()
         windower.add_to_chat(200, 'PartyManager: Password set to ' .. (val or '(none)') .. '.')
+        pm_ui.update()
     elseif command == 'trust' then
         local pc_count_num = tonumber(args[1])
         local sub = args[2] and args[2]:lower()
@@ -323,6 +333,7 @@ windower.register_event('addon command', function(command, ...)
                     settings.trust_lists[key] = table.concat(list, ',')
                     settings:save()
                     windower.add_to_chat(200, 'PartyManager: Added ' .. name .. ' to trust set for ' .. pc_count_num .. ' PCs.')
+                    pm_ui.update()
                 else
                     windower.add_to_chat(200, 'PartyManager: Error - Limit reached (Max ' .. (6 - pc_count_num) .. ').')
                 end
@@ -330,6 +341,7 @@ windower.register_event('addon command', function(command, ...)
                 settings.trust_lists[key] = ""
                 settings:save()
                 windower.add_to_chat(200, 'PartyManager: Cleared trust set for ' .. pc_count_num .. ' PCs.')
+                pm_ui.update()
             elseif sub == 'list' then
                 if #list > 0 then
                     windower.add_to_chat(200, 'PartyManager: Trusts for ' .. pc_count_num .. ' PCs: ' .. table.concat(list, ", "))
