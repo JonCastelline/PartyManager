@@ -20,6 +20,7 @@ A Windower 4 addon for Final Fantasy XI that automates party management, specifi
 - `//pm whitelist add <name>`: Add a player to the whitelist.
 - `//pm whitelist rm <name>`: Remove a player from the whitelist.
 - `//pm password <word>`: Set a trigger password (visible in UI).
+- `//pm limit <1-6>`: Set the maximum number of human players allowed in the party.
 - `//pm resummon on/off`: Toggle the Auto Trust Resummon feature.
 - `//pm status`: Check current state and settings.
 - `//pm reset`: Force reset the state machine to IDLE.

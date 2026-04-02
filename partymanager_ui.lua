@@ -107,7 +107,7 @@ local prims = {
 local BTN_KEYS = {
     'toggle', 'expand',
     'puller_btn', 'sync_mode', 'sync_target_btn',
-    'password_btn',
+    'password_btn', 'limit_btn',
     'reset', 'puller_stop', 'puller_start',
     'whitelist_btn',
     'trust_p1', 'trust_p2', 'trust_p3', 'trust_p4', 'trust_p5',
@@ -469,8 +469,11 @@ local function compute_rects()
             cur_y = cur_y + UI.btn_h + UI.gap
         end
 
-        -- Row: [Password: ****]
-        r['password_btn'] = {x = bx, y = cur_y, w = w, h = UI.btn_h}
+        -- Row: [PW: Password] [Limit: 6]
+        local pw_w = math.floor(w * 0.7)
+        local lim_w = w - pw_w - UI.gap
+        r['password_btn'] = {x = bx, y = cur_y, w = pw_w, h = UI.btn_h}
+        r['limit_btn'] = {x = bx + pw_w + UI.gap, y = cur_y, w = lim_w, h = UI.btn_h}
         cur_y = cur_y + UI.btn_h + UI.gap
 
         -- Row: [Reset] [Puller Stop] [Puller Start]
@@ -623,9 +626,15 @@ local function apply_layout()
 
         -- Password button
         local pw = ref_settings and ref_settings.password
-        local pw_display = (pw and pw ~= '') and truncate(pw, 14) or '(none)'
+        local pw_display = (pw and pw ~= '') and truncate(pw, 16) or '(none)'
         show_btn('password_btn', rects['password_btn'], UI.btn_password,
-            'Password: ' .. pw_display .. '  (click to set)', UI.muted_color)
+            'PW: ' .. pw_display, UI.muted_color)
+
+        -- Limit button
+        local lim = ref_settings and ref_settings.max_pcs or 6
+        show_btn('limit_btn', rects['limit_btn'], UI.btn_bg,
+            'Lim: ' .. lim, UI.text_color)
+
 
         -- Reset / Puller Stop / Puller Start
         local is_idle = (state_info.name == 'IDLE')
@@ -687,7 +696,7 @@ local function apply_layout()
         -- Hide party slots
         for i = 0, 5 do hide_info('info_p' .. i) end
 
-        for _, key in ipairs({'puller_btn','sync_mode','password_btn',
+        for _, key in ipairs({'puller_btn','sync_mode','sync_target_btn','password_btn','limit_btn',
             'reset','puller_stop','puller_start',
             'whitelist_btn','trust_p1','trust_p2','trust_p3','trust_p4','trust_p5',
             'auto_sync','auto_trust'}) do
@@ -802,6 +811,17 @@ local function handle_click(key)
 
     elseif key == 'password_btn' then
         prefill_chat('//pm password ')
+
+    elseif key == 'limit_btn' then
+        if ref_settings then
+            local current = ref_settings.max_pcs or 6
+            local next_limit = current + 1
+            if next_limit > 6 then next_limit = 1 end
+            ref_settings.max_pcs = next_limit
+            ref_settings:save()
+            windower.add_to_chat(200, 'PartyManager: Max PCs set to ' .. next_limit .. '.')
+            M.update()
+        end
 
     elseif key == 'reset' then
         safe_send('pm reset')
