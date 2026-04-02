@@ -561,6 +561,7 @@ windower.register_event('prerender', function()
             local m = party['p' .. i]
             if m and normalize(m.name) == target_player then
                 in_party = true
+                pm_ui.update()
                 if m.mob then
                     in_range = true
                 end
@@ -572,6 +573,7 @@ windower.register_event('prerender', function()
             windower.add_to_chat(200, 'PartyManager: '.. target_player .. ' has joined and is in range.')
             if settings.auto_level_sync then
                 current_state = states.TARGETING_FOR_SYNC
+                pm_ui.update()
             else
                 current_state = states.SUMMONING_TRUSTS
                 windower.add_to_chat(200, 'PartyManager: Auto-sync disabled. Skipping to trusts.')
@@ -594,6 +596,7 @@ windower.register_event('prerender', function()
                 target_player = nil
                 current_state = states.SUMMONING_TRUSTS
                 last_action_time = now + 2
+                pm_ui.update()
                 
             -- Periodic status updates
             elseif math.fmod(elapsed, 60) == 0 and elapsed > 0 then
@@ -653,6 +656,7 @@ windower.register_event('prerender', function()
         last_action_time = now
 
     elseif current_state == states.SUMMONING_TRUSTS then
+        pm_ui.update()
         if player.status == 4 then last_status = 4 return end
         if last_status == 4 then last_status = 0 last_action_time = now + 4 return end
 
