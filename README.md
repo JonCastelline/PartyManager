@@ -3,10 +3,12 @@
 A Windower 4 addon for Final Fantasy XI that automates party management, specifically designed for Master Leveling and coordination.
 
 ## Features
-- **Automated Invitations:** Whitelist-based invitations triggered by Tells (with optional password protection).
-- **Dynamic Trust Management:** Automatically manages trust sets (1PC to 5PC) based on the number of players in the party.
+- **Automated Invitations:** Whitelist-based invitations triggered by Tells (with optional password protection). Supports up to 6 PCs, with a configurable limit on "Carry" slots.
+- **Dynamic Trust Management:** Automatically manages trust sets (1PC to 5PC) or intelligently picks trusts based on party composition (roles). Players can join as contributors (counting their job toward trust selection) or carries (using the `--carry` flag).
+- **Role Detection:** Detects player roles based on their jobs or optional flags passed in the trigger message (e.g., `--geo`, `--healer`, `--rdm`, `--brd`, `--cor`, `--support`, `--tank`, `--dps`). "Carry" players do not count toward role coverage.
 - **Auto Trust Resummon:** Monitors the party and automatically stops the puller, kills the current mob, and re-summons trusts if a player leaves.
-- **Master Level Sync:** Automated level sync using raw packet injection (0x077) for 100% reliability.
+- **Master Level Sync:** Automated level sync using raw packet injection (0x077). 
+- **Intelligent Re-sync:** Automatically detects if the current Level Sync target leaves or if a reset is needed, ensuring trusts can always be summoned. Optimized to skip the 30-second reset if the correct target is already synced.
 - **Sync Modes:** Supports `sender` (sync to the person joining), `fixed` (sync to a specific character), or `lowest` (automatically finds the lowest Master Level in the party).
 - **Puller Coordination:** Coordinates with a puller (self or alt via `/console send`) to safely pause and resume pulling during party changes.
 - **Interactive UI:** A real-time UI for monitoring party status, Master Levels, and managing settings.
@@ -20,8 +22,9 @@ A Windower 4 addon for Final Fantasy XI that automates party management, specifi
 - `//pm whitelist add <name>`: Add a player to the whitelist.
 - `//pm whitelist rm <name>`: Remove a player from the whitelist.
 - `//pm password <word>`: Set a trigger password (visible in UI).
-- `//pm limit <1-6>`: Set the maximum number of human players allowed in the party.
+- `//pm carrylimit <0-5>`: Set the maximum number of players allowed to join with the `--carry` flag.
 - `//pm resummon on/off`: Toggle the Auto Trust Resummon feature.
+- `//pm dynamic on/off`: Toggle the Dynamic Trust Management feature.
 - `//pm status`: Check current state and settings.
 - `//pm reset`: Force reset the state machine to IDLE.
 

@@ -17,12 +17,13 @@ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS “AS IS” 
 
 _addon.name = 'PartyManager'
 _addon.author = 'Frodobald + BGP'
-_addon.version = '1.2.0'
+_addon.version = '1.4.0'
 _addon.commands = {'partymanager', 'pm'}
 
 require('luau')
 local config = require('config')
 local packets = require('packets')
+local res = require('resources')
 local pm_ui = require('partymanager_ui')
 
 -- Default settings - Using strings for trust lists to ensure 100% reliability in persistence
@@ -30,7 +31,7 @@ local defaults = {}
 defaults.enabled = true
 defaults.whitelist = S{}
 defaults.password = nil
-defaults.max_pcs = 6
+defaults.max_carries = 5
 defaults.puller = {
     name = nil,
     stop_cmd = '//trust stop',
@@ -48,6 +49,45 @@ defaults.sync_target = nil -- Fixed target name for 'fixed' mode
 defaults.reply_msg = "Wait a moment, preparing for invite..."
 defaults.auto_level_sync = false
 defaults.auto_trust_resummon = false 
+defaults.debug_mode = false
+
+-- Dynamic Trust Settings
+defaults.use_dynamic_trusts = true
+defaults.trust_priority = {
+    "Koru-Moru", "Sylvie (UC)", "Qultada", "Monberaux", "Ulmia"
+}
+-- Store roles as a list of objects to be XML-safe
+defaults.trust_roles = {
+    {name = "Koru-Moru", role = "RDM"},
+    {name = "Sylvie (UC)", role = "GEO"},
+    {name = "Qultada", role = "COR"},
+    {name = "Monberaux", role = "HEALER"},
+    {name = "Ulmia", role = "BRD"},
+}
+defaults.job_roles = {
+    [1]  = "DPS",     -- WAR
+    [2]  = "DPS",     -- MNK
+    [3]  = "HEALER",  -- WHM
+    [4]  = "DPS",     -- BLM
+    [5]  = "RDM",     -- RDM
+    [6]  = "DPS",     -- THF
+    [7]  = "TANK",    -- PLD
+    [8]  = "DPS",     -- DRK
+    [9]  = "DPS",     -- BST
+    [10] = "BRD",     -- BRD
+    [11] = "DPS",     -- RNG
+    [12] = "DPS",     -- SAM
+    [13] = "DPS",     -- NIN
+    [14] = "DPS",     -- DRG
+    [15] = "DPS",     -- SMN
+    [16] = "DPS",     -- BLU
+    [17] = "COR",     -- COR
+    [18] = "DPS",     -- PUP
+    [19] = "DPS",     -- DNC
+    [20] = "DPS",     -- SCH
+    [21] = "GEO",     -- GEO
+    [22] = "TANK",    -- RUN
+}
 
 local settings = config.load(defaults)
 
@@ -61,9 +101,10 @@ local states = {
     INVITING = 5,
     WAITING_FOR_JOIN = 6,
     TARGETING_FOR_SYNC = 7,
-    SYNCING = 8,
-    SUMMONING_TRUSTS = 9,
-    STARTING_PULLER = 10
+    WAITING_FOR_SYNC_OFF = 8,
+    SYNCING = 9,
+    SUMMONING_TRUSTS = 10,
+    STARTING_PULLER = 11
 }
 
 local current_state = states.IDLE
@@ -79,6 +120,8 @@ local initial_pc_count = 1
 local invite_time = 0
 local trust_summon_attempt_time = 0
 local last_pc_count = 1
+local sync_off_time = 0
+local last_msg_time = 0 -- For periodic messages
 
 -- Party member data tracking
 local party_data = {}
@@ -106,6 +149,40 @@ local function get_pc_count()
         if m and m.name and m.name ~= '' then
             if not m.mob or not m.mob.is_npc then
                 count = count + 1
+            end
+        end
+    end
+    return count
+end
+
+local function move_table_item(t, name, new_pos)
+    local old_pos = nil
+    for i, v in ipairs(t) do
+        if v:lower() == name:lower() then
+            old_pos = i
+            break
+        end
+    end
+    if not old_pos then return false end
+    
+    local item = table.remove(t, old_pos)
+    new_pos = math.max(1, math.min(#t + 1, new_pos))
+    table.insert(t, new_pos, item)
+    return true
+end
+
+local function get_carry_count()
+    local party = windower.ffxi.get_party()
+    if not party then return 0 end
+    local count = 0
+    for i = 0, 5 do
+        local m = party['p' .. i]
+        if m and m.name and m.name ~= '' then
+            if not m.mob or not m.mob.is_npc then
+                local data = party_data[m.name]
+                if data and data.is_carry then
+                    count = count + 1
+                end
             end
         end
     end
@@ -165,6 +242,25 @@ local function are_trusts_out()
     return false
 end
 
+local function cleanup_party_data()
+    local party = windower.ffxi.get_party()
+    if not party then return end
+    
+    local current_members = {}
+    for i = 0, 5 do
+        local m = party['p' .. i]
+        if m and m.name and m.name ~= '' then
+            current_members[normalize(m.name)] = true
+        end
+    end
+    
+    for name, _ in pairs(party_data) do
+        if not current_members[name] then
+            party_data[name] = nil
+        end
+    end
+end
+
 local function is_trust_in_party(name)
     local party = windower.ffxi.get_party()
     if not party then return false end
@@ -221,6 +317,94 @@ local function get_lowest_ml_pc()
     end
     
     return lowest_name
+end
+
+local function get_current_sync_target()
+    local party = windower.ffxi.get_party()
+    if not party then return nil end
+    for i = 0, 5 do
+        local m = party['p' .. i]
+        if m and m.name and m.name ~= '' and m.level_sync then
+            return normalize(m.name)
+        end
+    end
+    return nil
+end
+
+local function get_role_for_job(job_id)
+    if not job_id or job_id == 0 then return nil end
+    return settings.job_roles[job_id] or settings.job_roles[tostring(job_id)]
+end
+
+local function get_dynamic_trust_list(force_verbose)
+    local pc_count = get_pc_count()
+    local slots_available = 6 - pc_count
+    if slots_available <= 0 then return {} end
+
+    local verbose = force_verbose or settings.debug_mode
+    local covered_roles = {}
+    local party = windower.ffxi.get_party()
+    
+    -- Check Self
+    local player = windower.ffxi.get_player()
+    if player then
+        local role = get_role_for_job(player.main_job_id)
+        if verbose then
+            windower.add_to_chat(200, 'PartyManager: [DEBUG] PC: ' .. normalize(player.name) .. ' (Self) JobID: ' .. tostring(player.main_job_id) .. ' -> Role: ' .. (role or 'None'))
+        end
+        if role then covered_roles[role] = true end
+    end
+
+    -- Check other PCs
+    for i = 1, 5 do
+        local m = party['p' .. i]
+        if m and m.name and m.name ~= '' then
+            if not m.mob or not m.mob.is_npc then
+                local name = normalize(m.name)
+                local data = party_data[name]
+                
+                local debug_str = 'PartyManager: [DEBUG] PC: ' .. name
+                
+                if data and data.is_carry then
+                    if verbose then windower.add_to_chat(200, debug_str .. ' (Carry) - Skipping role detection.') end
+                else
+                    local job_id = m.job
+                    local role = get_role_for_job(job_id)
+                    local source = 'get_party()'
+                    
+                    if not role and data and data.main_job then
+                        job_id = data.main_job
+                        role = get_role_for_job(job_id)
+                        source = '0x0DD'
+                    end
+                    
+                    if verbose then
+                        windower.add_to_chat(200, debug_str .. ' JobID: ' .. tostring(job_id or 0) .. ' -> Role: ' .. (role or 'None') .. ' (Source: ' .. source .. ')')
+                    end
+                    
+                    if role then covered_roles[role] = true end
+                end
+            end
+        end
+    end
+
+    local list = {}
+    for _, trust_name in ipairs(settings.trust_priority) do
+        local role = nil
+        for _, entry in ipairs(settings.trust_roles) do
+            if entry.name == trust_name then
+                role = entry.role
+                break
+            end
+        end
+
+        if not role or role == 'None' or not covered_roles[role] then
+            table.insert(list, trust_name)
+            if role and role ~= 'None' then covered_roles[role] = true end
+            if #list >= slots_available then break end
+        end
+    end
+    return list
 end
 
 -- UI INITIALIZATION
@@ -312,15 +496,15 @@ windower.register_event('addon command', function(command, ...)
                 windower.add_to_chat(200, 'PartyManager: Please specify a sync target name.')
             end
         end
-    elseif command == 'limit' then
+    elseif command == 'carrylimit' then
         local val = tonumber(args[1])
-        if val and val >= 1 and val <= 6 then
-            settings.max_pcs = val
+        if val and val >= 0 and val <= 5 then
+            settings.max_carries = val
             settings:save()
-            windower.add_to_chat(200, 'PartyManager: Max PCs set to ' .. val .. '.')
+            windower.add_to_chat(200, 'PartyManager: Max Carry PCs set to ' .. val .. '.')
             pm_ui.update()
         else
-            windower.add_to_chat(200, 'PartyManager: Invalid limit. Use 1-6.')
+            windower.add_to_chat(200, 'PartyManager: Invalid limit. Use 0-5.')
         end
     elseif command == 'password' then
         local val = args[1]
@@ -377,6 +561,113 @@ windower.register_event('addon command', function(command, ...)
         end
         settings:save()
         windower.add_to_chat(200, 'PartyManager: Auto Trust Resummon: ' .. (settings.auto_trust_resummon and 'ON' or 'OFF'))
+    elseif command == 'dynamic' then
+        local val = args[1] and args[1]:lower()
+        if val == 'on' then
+            settings.use_dynamic_trusts = true
+        elseif val == 'off' then
+            settings.use_dynamic_trusts = false
+        end
+        settings:save()
+        windower.add_to_chat(200, 'PartyManager: Use Dynamic Trusts: ' .. (settings.use_dynamic_trusts and 'ON' or 'OFF'))
+    elseif command == 'debug' then
+        local val = args[1] and args[1]:lower()
+        if val == 'on' then
+            settings.debug_mode = true
+        elseif val == 'off' then
+            settings.debug_mode = false
+        end
+        settings:save()
+        windower.add_to_chat(200, 'PartyManager: Debug Mode: ' .. (settings.debug_mode and 'ON' or 'OFF'))
+    elseif command == 'debug' then
+        local val = args[1] and args[1]:lower()
+        if val == 'on' then
+            settings.debug_mode = true
+        elseif val == 'off' then
+            settings.debug_mode = false
+        end
+        settings:save()
+        windower.add_to_chat(200, 'PartyManager: Debug Mode: ' .. (settings.debug_mode and 'ON' or 'OFF'))
+    elseif command == 'priority' then
+        local sub = args[1] and args[1]:lower()
+        local val = args[2]
+        if sub == 'add' and val then
+            table.insert(settings.trust_priority, val)
+            settings:save()
+            windower.add_to_chat(200, 'PartyManager: Added ' .. val .. ' to dynamic priority list.')
+            pm_ui.update()
+        elseif sub == 'rm' and val then
+            for i, v in ipairs(settings.trust_priority) do
+                if v:lower() == val:lower() then
+                    table.remove(settings.trust_priority, i)
+                    settings:save()
+                    windower.add_to_chat(200, 'PartyManager: Removed ' .. val .. ' from dynamic priority list.')
+                    pm_ui.update()
+                    break
+                end
+            end
+        elseif sub == 'move' and val and tonumber(args[3]) then
+            if move_table_item(settings.trust_priority, val, tonumber(args[3])) then
+                settings:save()
+                windower.add_to_chat(200, 'PartyManager: Moved ' .. val .. ' to position ' .. args[3] .. '.')
+                pm_ui.update()
+            end
+        elseif sub == 'list' then
+            windower.add_to_chat(200, 'PartyManager: Dynamic Trust Priority:')
+            for i, v in ipairs(settings.trust_priority) do
+                local role = 'None'
+                for _, entry in ipairs(settings.trust_roles) do
+                    if entry.name == v then
+                        role = entry.role
+                        break
+                    end
+                end
+                windower.add_to_chat(200, '  ' .. i .. '. ' .. v .. ' [' .. role .. ']')
+            end
+        elseif sub == 'reset' then
+            settings.trust_priority = {}
+            for i, v in ipairs(defaults.trust_priority) do settings.trust_priority[i] = v end
+            settings.trust_roles = {}
+            for k, v in pairs(defaults.trust_roles) do settings.trust_roles[k] = v end
+            settings:save()
+            windower.add_to_chat(200, 'PartyManager: Dynamic trust settings reset to defaults.')
+            pm_ui.update()
+        end
+    elseif command == 'role' then
+        local sub = args[1] and args[1]:lower()
+        local trust = args[2]
+        local role = args[3] and args[3]:upper()
+        if sub == 'set' and trust and role then
+            local found = false
+            for _, entry in ipairs(settings.trust_roles) do
+                if entry.name:lower() == trust:lower() then
+                    entry.role = role
+                    found = true
+                    break
+                end
+            end
+            if not found then
+                table.insert(settings.trust_roles, {name = trust, role = role})
+            end
+            settings:save()
+            windower.add_to_chat(200, 'PartyManager: Set role for ' .. trust .. ' to ' .. role .. '.')
+            pm_ui.update()
+        elseif sub == 'rm' and trust then
+            for i, entry in ipairs(settings.trust_roles) do
+                if entry.name:lower() == trust:lower() then
+                    table.remove(settings.trust_roles, i)
+                    break
+                end
+            end
+            settings:save()
+            windower.add_to_chat(200, 'PartyManager: Cleared role for ' .. trust .. '.')
+            pm_ui.update()
+        elseif sub == 'list' then
+            windower.add_to_chat(200, 'PartyManager: Trust Role Mappings:')
+            for _, entry in ipairs(settings.trust_roles) do
+                windower.add_to_chat(200, '  ' .. entry.name .. ': ' .. entry.role)
+            end
+        end
     elseif command == 'reset' then
         current_state = states.IDLE
         target_player = nil
@@ -396,12 +687,13 @@ windower.register_event('addon command', function(command, ...)
         send_puller_cmd(settings.puller.start_cmd)
         windower.add_to_chat(200, 'PartyManager: Puller start sent.')
     else
-        windower.add_to_chat(200, 'PartyManager: Unknown command. Options: on, off, whitelist add/rm, password, puller name/stop/start, status, reset, trust <pc> add/clear/list.')
+        windower.add_to_chat(200, 'PartyManager: Unknown command. Options: on, off, whitelist add/rm, password, puller name/stop/start, dynamic on/off, status, reset, trust <pc> add/clear/list.')
     end
 end)
 
-local function send_level_sync_packet(target_name)
-    -- Use raw injection for 0x077 (Party Settings/Level Sync).
+local function send_level_sync_packet(target_name, action)
+    action = action or 0x06
+    -- Use raw injection for 0x077 (Party Settings/Level Sync). 0x06 for sync off
     -- 1-2: Header Placeholder (will be overwritten by inject_outgoing)
     -- 3-4: Filler/Sequence (matches 1B 30 from successful capture)
     local payload = string.char(0, 0, 0x1B, 0x30)
@@ -410,8 +702,8 @@ local function send_level_sync_packet(target_name)
     local name_part = target_name:sub(1, 16)
     payload = payload .. name_part .. string.char(0):rep(16 - #name_part)
     
-    -- 21-24: Command Tail (0x06 at offset 21)
-    payload = payload .. string.char(0, 0x06, 0, 0)
+    -- 21-24: Command Tail (Action at offset 22)
+    payload = payload .. string.char(0, action, 0, 0)
     
     windower.packets.inject_outgoing(0x077, payload)
     return true
@@ -426,7 +718,7 @@ windower.register_event('incoming chunk', function(id, data)
     if id == 0x0DD then
         local p = packets.parse('incoming', data)
         if p and p.Name then
-            local name = p.Name
+            local name = normalize(p.Name)
             party_data[name] = party_data[name] or {}
             party_data[name].master_level = p['Master Level']
             party_data[name].main_level = p['Main job level']
@@ -443,7 +735,8 @@ windower.register_event('incoming chunk', function(id, data)
             local msg = clean(p['Message'] or p['message'])
             if settings.whitelist:contains(sender) then
                 local has_password = settings.password and settings.password ~= ''
-                local password_match = not has_password or msg:lower():contains(settings.password:lower())
+                local msg_lower = msg:lower()
+                local password_match = not has_password or msg_lower:contains(settings.password:lower())
                 if password_match then
                     local party = windower.ffxi.get_party()
                     local already_in_party = false
@@ -455,10 +748,30 @@ windower.register_event('incoming chunk', function(id, data)
                     end
                     if already_in_party then
                         windower.send_command('input /t ' .. sender .. ' You are already in the party.')
-                    elseif get_pc_count() < settings.max_pcs then
-                        target_player = sender
-                        initial_pc_count = get_pc_count()
-                        current_state = states.REPLYING
+                    elseif get_pc_count() < 6 then
+                        -- Check carry limit if requesting carry
+                        local is_carry_req = msg_lower:contains('--carry')
+                        if is_carry_req and get_carry_count() >= settings.max_carries then
+                            windower.send_command('input /t ' .. sender .. ' Sorry, the party is full.')
+                        else
+                            target_player = sender
+                            initial_pc_count = get_pc_count()
+                            
+                            -- Parse flags
+                            party_data[sender] = party_data[sender] or {}
+                            party_data[sender].is_carry = is_carry_req
+                            party_data[sender].requested_role = nil
+                            
+                            if not is_carry_req then
+                                if msg_lower:contains('--dps') then
+                                    party_data[sender].requested_role = 'DPS'
+                                elseif msg_lower:contains('--healer') then
+                                    party_data[sender].requested_role = 'HEALER'
+                                end
+                            end
+                            
+                            current_state = states.REPLYING
+                        end
                     else
                         windower.send_command('input /t ' .. sender .. ' Sorry, the party is full.')
                     end
@@ -480,6 +793,9 @@ windower.register_event('prerender', function()
             if settings.auto_trust_resummon and current_state == states.IDLE then
                 windower.add_to_chat(200, 'PartyManager: Player left the party. Initiating reconfiguration.')
                 target_player = nil -- Ensure we know it's a resummon
+                
+                -- Check if we need to force sync (target left)
+                -- We always force sync here if auto_level_sync is on OR if current sync is invalid
                 current_state = states.STOPPING_PULLER
                 last_action_time = now
                 -- Default to skipping cooldown; will be reset if we sync
@@ -578,6 +894,7 @@ windower.register_event('prerender', function()
                 current_state = states.SUMMONING_TRUSTS
                 windower.add_to_chat(200, 'PartyManager: Auto-sync disabled. Skipping to trusts.')
             end
+            last_msg_time = 0 -- Reset timer for next state
             last_action_time = now
         else
             local elapsed = os.time() - invite_time
@@ -587,6 +904,7 @@ windower.register_event('prerender', function()
                 windower.add_to_chat(200, 'PartyManager: ' .. target_player .. ' failed to accept invite within 3 minutes. Giving up.')
                 target_player = nil
                 current_state = states.SUMMONING_TRUSTS
+                last_msg_time = 0
                 last_action_time = now
             
             -- Scenario 2: In party but not in range after 10 minutes
@@ -595,16 +913,18 @@ windower.register_event('prerender', function()
                 windower.send_command('input /pcmd kick ' .. target_player)
                 target_player = nil
                 current_state = states.SUMMONING_TRUSTS
+                last_msg_time = 0
                 last_action_time = now + 2
                 pm_ui.update()
                 
-            -- Periodic status updates
-            elseif math.fmod(elapsed, 60) == 0 and elapsed > 0 then
+            -- Periodic status updates (Every 60s)
+            elseif (now - last_msg_time >= 60) and elapsed > 0 then
                 local reason = in_party and "arrive" or "accept invite"
                 local limit = in_party and 600 or 180
                 local remaining = limit - elapsed
                 if remaining >= 0 then
                     windower.add_to_chat(200, 'PartyManager: Still waiting for ' .. target_player .. ' to ' .. reason .. ' (' .. remaining .. 's remaining).')
+                    last_msg_time = now
                 end
             end
         end
@@ -620,14 +940,47 @@ windower.register_event('prerender', function()
         end
 
         if sync_target_name then
-            windower.add_to_chat(200, 'PartyManager: Targeting ' .. sync_target_name .. ' for level sync.')
-            windower.send_command('input /target ' .. sync_target_name)
-            current_state = states.SYNCING
-            last_action_time = now + 1.5 -- Give it time to target
+            local current_sync = get_current_sync_target()
+            if current_sync and current_sync:lower() == sync_target_name:lower() then
+                windower.add_to_chat(200, 'PartyManager: Already synced to ' .. sync_target_name .. '. Skipping reset.')
+                current_state = states.SUMMONING_TRUSTS
+                windower.add_to_chat(200, 'PartyManager: Summoning trusts.')
+                trust_summon_index = 1
+                trust_summon_attempt_time = 0
+                last_msg_time = 0
+                last_action_time = now
+            elseif not current_sync then
+                -- Optimization: No one is synced, skip deactivation wait
+                windower.add_to_chat(200, 'PartyManager: No sync active. Proceeding directly to sync.')
+                current_state = states.SYNCING
+                last_msg_time = 0
+                last_action_time = now
+            else
+                windower.add_to_chat(200, 'PartyManager: Deactivating Level Sync (Cooldown: 30s).')
+                send_level_sync_packet(player.name, 0x07)
+                current_state = states.WAITING_FOR_SYNC_OFF
+                sync_off_time = os.time()
+                last_msg_time = 0
+                last_action_time = now
+            end
         else
             windower.add_to_chat(200, 'PartyManager: Sync mode set to none or no valid target found. Skipping sync.')
             current_state = states.SUMMONING_TRUSTS
+            last_msg_time = 0
             last_action_time = now
+        end
+
+    elseif current_state == states.WAITING_FOR_SYNC_OFF then
+        local elapsed = os.time() - sync_off_time
+        if elapsed >= 30 then
+            windower.add_to_chat(200, 'PartyManager: Level Sync cooldown complete.')
+            current_state = states.SYNCING
+            last_msg_time = 0
+            last_action_time = now
+        elseif (now - last_msg_time >= 10) and elapsed > 0 then
+            windower.add_to_chat(200, 'PartyManager: Waiting for Level Sync cooldown (' .. (30 - elapsed) .. 's remaining).')
+            last_msg_time = now
+            last_action_time = now + 1
         end
 
     elseif current_state == states.SYNCING then
@@ -641,19 +994,30 @@ windower.register_event('prerender', function()
         end
 
         if sync_target_name then
-            windower.add_to_chat(200, 'PartyManager: Injecting Level Sync packet (0x077) for ' .. sync_target_name .. '.')
-            send_level_sync_packet(sync_target_name)
-            -- Syncing resets the trust cooldown timer!
-            invite_time = os.time()
+            windower.add_to_chat(200, 'PartyManager: Targeting ' .. sync_target_name .. ' for level sync.')
+            windower.send_command('input /target ' .. sync_target_name)
+            
+            -- We use a small delay for targeting to settle
+            coroutine.schedule(function()
+                windower.add_to_chat(200, 'PartyManager: Injecting Level Sync packet (0x077) for ' .. sync_target_name .. '.')
+                send_level_sync_packet(sync_target_name, 0x06)
+                -- Syncing resets the trust cooldown timer!
+                invite_time = os.time()
+                current_state = states.SUMMONING_TRUSTS
+                windower.add_to_chat(200, 'PartyManager: Summoning trusts.')
+                trust_summon_index = 1
+                trust_summon_attempt_time = 0
+                last_action_time = os.clock()
+                pm_ui.update()
+            end, 1.5)
+            
+            -- Prevent state machine from acting while coroutine is running
+            last_action_time = now + 5
         else
             windower.add_to_chat(200, 'PartyManager: Sync mode set to none or no valid target found. Skipping sync.')
+            current_state = states.SUMMONING_TRUSTS
+            last_action_time = now
         end
-        
-        current_state = states.SUMMONING_TRUSTS
-        windower.add_to_chat(200, 'PartyManager: Summoning trusts.')
-        trust_summon_index = 1
-        trust_summon_attempt_time = 0
-        last_action_time = now
 
     elseif current_state == states.SUMMONING_TRUSTS then
         pm_ui.update()
@@ -661,20 +1025,24 @@ windower.register_event('prerender', function()
         if last_status == 4 then last_status = 0 last_action_time = now + 4 return end
 
         if trust_summon_initial then
+            local trust_list = settings.use_dynamic_trusts and get_dynamic_trust_list() or get_trust_list(get_pc_count())
+            windower.add_to_chat(200, 'PartyManager: Planning to summon: ' .. (#trust_list > 0 and table.concat(trust_list, ", ") or "None"))
             windower.add_to_chat(200, 'PartyManager: There is a 2 minute cooldown for Trusts after party changes. Starting timer.')
             trust_summon_initial = false
+            last_msg_time = now
         end
         local elapsed = os.time() - invite_time
         if elapsed < 120 then
-            if math.fmod(elapsed, 30) == 0 then
+            if (now - last_msg_time >= 30) then
                 windower.add_to_chat(200, 'PartyManager: Waiting for trust cooldown (' .. (120 - elapsed) .. 's remaining).')
+                last_msg_time = now
             end
             last_action_time = now + 5
             return
         end
 
         local pc_count = get_pc_count()
-        local trust_list = get_trust_list(pc_count)
+        local trust_list = settings.use_dynamic_trusts and get_dynamic_trust_list() or get_trust_list(pc_count)
         local slots_available = 6 - pc_count
         
         local current_trusts = 0
@@ -699,7 +1067,7 @@ windower.register_event('prerender', function()
                 last_action_time = now
             end
         else
-            if #trust_list == 0 then windower.add_to_chat(200, 'PartyManager: Warning - No trusts defined for PC count ' .. pc_count .. '.') end
+            if #trust_list == 0 then windower.add_to_chat(200, 'PartyManager: Warning - No trusts defined or available for PC count ' .. pc_count .. '.') end
             windower.add_to_chat(200, 'PartyManager: Trust summoning complete.')
             current_state = states.STARTING_PULLER
             trust_summon_initial = true
