@@ -54,6 +54,7 @@ local UI = {
     empty_color    = {80, 80, 90, 255},
 }
 local HOVER_BOOST = 25
+local ROLES = {'GEO', 'RDM', 'BRD', 'COR', 'HEALER', 'SUPPORT', 'TANK', 'DPS', 'None'}
 
 ---------------------------------------------------------------------------
 -- Position persistence
@@ -109,12 +110,18 @@ local BTN_KEYS = {
     'puller_btn', 'sync_mode', 'sync_target_btn',
     'password_btn', 'limit_btn',
     'reset', 'puller_stop', 'puller_start',
-    'whitelist_btn',
+    'whitelist_btn', 'priority_btn',
     'trust_p1', 'trust_p2', 'trust_p3', 'trust_p4', 'trust_p5',
-    'auto_sync', 'auto_trust',
+    'auto_sync', 'auto_trust', 'dynamic_toggle', 'debug_toggle',
     'picker_close', 'picker_prev', 'picker_next',
 }
-for i = 0, 9 do BTN_KEYS[#BTN_KEYS + 1] = 'pick_' .. i end
+for i = 0, 9 do 
+    BTN_KEYS[#BTN_KEYS + 1] = 'pick_' .. i 
+    BTN_KEYS[#BTN_KEYS + 1] = 'pick_up_' .. i
+    BTN_KEYS[#BTN_KEYS + 1] = 'pick_dn_' .. i
+    BTN_KEYS[#BTN_KEYS + 1] = 'pick_rm_' .. i
+    BTN_KEYS[#BTN_KEYS + 1] = 'pick_ro_' .. i
+end
 
 for _, key in ipairs(BTN_KEYS) do
     prims.btns[key] = 'pm_btn_' .. key
@@ -280,9 +287,11 @@ local function get_party_trusts()
     if not party then return trusts end
     for i = 1, 5 do
         local m = party['p' .. i]
-        if m and m.name and m.name ~= '' then
-            if m.mob and m.mob.is_npc then
-                trusts[#trusts+1] = m.name
+        if m and m.id and m.id ~= 0 then
+            -- Use full mob data for accurate names (handles UC, II, etc.)
+            local mob = windower.ffxi.get_mob_by_id(m.id)
+            if mob and mob.is_npc then
+                trusts[#trusts+1] = mob.name
             end
         end
     end
@@ -301,8 +310,10 @@ local function get_party_slots()
     for i = 0, 5 do
         local m = party['p' .. i]
         if m and m.name and m.name ~= '' then
-            local is_npc = m.mob and m.mob.is_npc or false
-            slots[i] = {name = m.name, is_trust = is_npc}
+            local mob = m.id and m.id ~= 0 and windower.ffxi.get_mob_by_id(m.id) or nil
+            local is_npc = mob and mob.is_npc or false
+            local display_name = (is_npc and mob and mob.name) or m.name
+            slots[i] = {name = display_name, is_trust = is_npc}
         end
     end
     return slots
@@ -404,6 +415,30 @@ local function build_trust_data(pc_count)
     return items
 end
 
+local function build_priority_data()
+    local items = {}
+    if not ref_settings or not ref_settings.trust_priority then return items end
+    for _, name in ipairs(ref_settings.trust_priority) do
+        local role = 'None'
+        for _, entry in ipairs(ref_settings.trust_roles) do
+            if entry.name == name then
+                role = entry.role
+                break
+            end
+        end
+        items[#items+1] = {
+            type = 'priority', name = name,
+            role = role
+        }
+    end
+    -- Add entry for manual addition
+    items[#items+1] = {
+        type = 'manual_add_priority', name = '+ Add Trust to Priority List...',
+        info = ''
+    }
+    return items
+end
+
 ---------------------------------------------------------------------------
 -- Refresh picker data
 ---------------------------------------------------------------------------
@@ -413,6 +448,8 @@ local function refresh_picker_data()
         picker_data = build_puller_data()
     elseif picker_type == 'whitelist' then
         picker_data = build_whitelist_data()
+    elseif picker_type == 'priority' then
+        picker_data = build_priority_data()
     elseif picker_type and picker_type:sub(1, 7) == 'trust_p' then
         local pc = tonumber(picker_type:sub(8))
         if pc then
@@ -469,9 +506,13 @@ local function compute_rects()
             cur_y = cur_y + UI.btn_h + UI.gap
         end
 
-        -- Row: [PW: Password] [Limit: 6]
+        -- Row: [PW: Password] [CarLimit: 5]
         local pw_w = math.floor(w * 0.7)
         local lim_w = w - pw_w - UI.gap
+        r['limit_btn'] = {x = bx, y = cur_y, w = pw_w, h = UI.btn_h}
+        r['limit_btn'] = {x = bx + pw_w + UI.gap, y = cur_y, w = lim_w, h = UI.btn_h}
+        
+        -- Need to fix the overlapping key above, correctly:
         r['password_btn'] = {x = bx, y = cur_y, w = pw_w, h = UI.btn_h}
         r['limit_btn'] = {x = bx + pw_w + UI.gap, y = cur_y, w = lim_w, h = UI.btn_h}
         cur_y = cur_y + UI.btn_h + UI.gap
@@ -483,8 +524,10 @@ local function compute_rects()
         r['puller_start'] = {x = bx + 2*(tw3 + UI.gap), y = cur_y, w = tw3, h = UI.btn_h}
         cur_y = cur_y + UI.btn_h + UI.gap
 
-        -- Row: [Whitelist (N)]
-        r['whitelist_btn'] = {x = bx, y = cur_y, w = w, h = UI.btn_h}
+        -- Row: [Whitelist (N)] [Priority List]
+        local hw = math.floor((w - UI.gap) / 2)
+        r['whitelist_btn'] = {x = bx, y = cur_y, w = hw, h = UI.btn_h}
+        r['priority_btn'] = {x = bx + hw + UI.gap, y = cur_y, w = hw, h = UI.btn_h}
         cur_y = cur_y + UI.btn_h + UI.gap
 
         -- Row: [1PC] [2PC] [3PC] [4PC] [5PC]
@@ -497,6 +540,13 @@ local function compute_rects()
         -- Row: [AutoSync: OFF] [AutoTrust: OFF]
         r['auto_sync']  = {x = bx, y = cur_y, w = hw, h = UI.btn_h}
         r['auto_trust'] = {x = bx + hw + UI.gap, y = cur_y, w = hw, h = UI.btn_h}
+        cur_y = cur_y + UI.btn_h + UI.gap
+
+        -- Row: [Dynamic Trusts: ON/OFF]
+        local dyn_w = math.floor(w * 0.6)
+        local dbg_w = w - dyn_w - UI.gap
+        r['dynamic_toggle'] = {x = bx, y = cur_y, w = dyn_w, h = UI.btn_h}
+        r['debug_toggle'] = {x = bx + dyn_w + UI.gap, y = cur_y, w = dbg_w, h = UI.btn_h}
         cur_y = cur_y + UI.btn_h + UI.gap
     else
         -- Collapsed
@@ -525,7 +575,17 @@ local function compute_picker_rects()
     local end_idx = math.min(start_idx + UI.items_per_page - 1, #picker_data)
     for i = start_idx, end_idx do
         local slot = i - start_idx
-        r['pick_' .. slot] = {x = pbx, y = cur_y, w = pfw, h = UI.picker_btn_h}
+        local ry = cur_y
+        
+        if picker_type == 'priority' then
+            r['pick_up_' .. slot] = {x = pbx, y = ry, w = 20, h = UI.picker_btn_h}
+            r['pick_dn_' .. slot] = {x = pbx + 22, y = ry, w = 20, h = UI.picker_btn_h}
+            r['pick_' .. slot]    = {x = pbx + 44, y = ry, w = pfw - 144, h = UI.picker_btn_h}
+            r['pick_ro_' .. slot] = {x = pbx + pfw - 98, y = ry, w = 70, h = UI.picker_btn_h}
+            r['pick_rm_' .. slot] = {x = pbx + pfw - 26, y = ry, w = 26, h = UI.picker_btn_h}
+        else
+            r['pick_' .. slot] = {x = pbx, y = cur_y, w = pfw, h = UI.picker_btn_h}
+        end
         cur_y = cur_y + UI.picker_btn_h + 2
     end
 
@@ -587,13 +647,21 @@ local function apply_layout()
                 local prefix = (i == 0) and 'P0' or ('P' .. i)
                 local suffix = slot.is_trust and ' (Trust)' or ''
                 
-                -- Check for Master Level in our tracked data
+                -- Check for Master Level and Role in our tracked data
                 local ml_str = ""
-                if ref_party_data and ref_party_data[slot.name] and ref_party_data[slot.name].master_level then
-                    ml_str = " [ML" .. tostring(ref_party_data[slot.name].master_level) .. "]"
+                local role_str = ""
+                if ref_party_data and ref_party_data[slot.name] then
+                    if ref_party_data[slot.name].master_level then
+                        ml_str = " [ML" .. tostring(ref_party_data[slot.name].master_level) .. "]"
+                    end
+                    if ref_party_data[slot.name].is_carry then
+                        role_str = " (Carry)"
+                    elseif ref_party_data[slot.name].requested_role then
+                        role_str = " (" .. ref_party_data[slot.name].requested_role .. ")"
+                    end
                 end
                 
-                local label = ('%s: %s%s%s'):format(prefix, slot.name, suffix, ml_str)
+                local label = ('%s: %s%s%s%s'):format(prefix, slot.name, suffix, ml_str, role_str)
                 local color = slot.is_trust and UI.trust_color or UI.party_color
                 show_info_h(skey, sy, UI.party_row_h, label, color)
             else
@@ -631,9 +699,9 @@ local function apply_layout()
             'PW: ' .. pw_display, UI.muted_color)
 
         -- Limit button
-        local lim = ref_settings and ref_settings.max_pcs or 6
+        local lim = ref_settings and ref_settings.max_carries or 5
         show_btn('limit_btn', rects['limit_btn'], UI.btn_bg,
-            'Lim: ' .. lim, UI.text_color)
+            'CarryMax: ' .. lim, UI.text_color)
 
 
         -- Reset / Puller Stop / Puller Start
@@ -656,6 +724,17 @@ local function apply_layout()
         show_btn('whitelist_btn', rects['whitelist_btn'],
             is_wl_open and UI.btn_open or UI.btn_equip,
             ('Whitelist (%d)'):format(wl_count), wl_count > 0 and UI.on_color or UI.text_color)
+
+        -- Priority List button
+        local is_dynamic = ref_settings and ref_settings.use_dynamic_trusts or false
+        if is_dynamic then
+            local is_pri_open = picker_open and picker_type == 'priority'
+            show_btn('priority_btn', rects['priority_btn'],
+                is_pri_open and UI.btn_open or UI.btn_equip,
+                'Priority List', UI.text_color)
+        else
+            show_btn('priority_btn', nil)
+        end
 
         -- Trust list buttons 1PC..5PC
         for i = 1, 5 do
@@ -687,6 +766,20 @@ local function apply_layout()
             auto_trust_on and UI.btn_on or UI.btn_bg,
             auto_trust_on and 'AutoTrust: ON' or 'AutoTrust: OFF',
             auto_trust_on and UI.on_color or UI.muted_color)
+
+        -- Dynamic trust toggle
+        local dynamic_on = ref_settings and ref_settings.use_dynamic_trusts or false
+        show_btn('dynamic_toggle', rects['dynamic_toggle'],
+            dynamic_on and UI.btn_on or UI.btn_bg,
+            dynamic_on and 'Dynamic Trusts: ON' or 'Dynamic Trusts: OFF',
+            dynamic_on and UI.on_color or UI.muted_color)
+
+        -- Debug toggle
+        local debug_on = ref_settings and ref_settings.debug_mode or false
+        show_btn('debug_toggle', rects['debug_toggle'],
+            debug_on and UI.btn_on or UI.btn_bg,
+            debug_on and 'Debug Mode: ' .. (debug_on and 'ON' or 'OFF'),
+            debug_on and UI.on_color or UI.muted_color)
     else
         -- Collapsed
         local state_label = 'State: ' .. (state_info.name or 'IDLE')
@@ -698,8 +791,8 @@ local function apply_layout()
 
         for _, key in ipairs({'puller_btn','sync_mode','sync_target_btn','password_btn','limit_btn',
             'reset','puller_stop','puller_start',
-            'whitelist_btn','trust_p1','trust_p2','trust_p3','trust_p4','trust_p5',
-            'auto_sync','auto_trust'}) do
+            'whitelist_btn','priority_btn','trust_p1','trust_p2','trust_p3','trust_p4','trust_p5',
+            'auto_sync','auto_trust','dynamic_toggle'}) do
             show_btn(key, nil)
         end
         set_vis(prims.picker_bg, false); set_vis(prims.picker_border, false)
@@ -727,34 +820,55 @@ local function apply_layout()
             local key = 'pick_' .. slot
             local idx = start_idx + slot
             local rc = prects[key]
+            
+            -- Hide extra buttons by default
+            show_btn('pick_up_' .. slot, nil)
+            show_btn('pick_dn_' .. slot, nil)
+            show_btn('pick_ro_' .. slot, nil)
+            show_btn('pick_rm_' .. slot, nil)
+
             if rc and idx <= #picker_data then
                 local item = picker_data[idx]
-                local bg, label, lcolor
-                local info_str = item.info and item.info ~= '' and ('  [%s]'):format(item.info) or ''
-
-                if item.type == 'select' then
-                    local marker = item.is_current and '>> ' or '   '
-                    label = marker .. item.name .. info_str
-                    bg = item.is_current and UI.btn_picker_sel or UI.btn_picker_bg
-                    lcolor = item.is_current and UI.on_color or UI.text_color
-                elseif item.type == 'remove' then
-                    label = '[x] ' .. item.name .. info_str
-                    bg = UI.btn_picker_sel
-                    lcolor = UI.on_color
-                elseif item.type == 'add' then
-                    label = '[+] ' .. item.name .. info_str
-                    bg = UI.btn_picker_add
-                    lcolor = UI.add_color
-                elseif item.type == 'manual_add' then
-                    label = item.name
-                    bg = UI.btn_picker_manual
-                    lcolor = UI.manual_color
+                
+                if picker_type == 'priority' then
+                    if item.type == 'priority' then
+                        show_btn('pick_up_' .. slot, prects['pick_up_' .. slot], UI.btn_bg, '^', UI.text_color)
+                        show_btn('pick_dn_' .. slot, prects['pick_dn_' .. slot], UI.btn_bg, 'v', UI.text_color)
+                        show_btn(key, rc, UI.btn_picker_bg, truncate(item.name, 18), UI.text_color)
+                        show_btn('pick_ro_' .. slot, prects['pick_ro_' .. slot], UI.btn_sync, item.role, UI.on_color)
+                        show_btn('pick_rm_' .. slot, prects['pick_rm_' .. slot], UI.btn_off, 'X', UI.text_color)
+                    else
+                        -- Manual add priority
+                        show_btn(key, rc, UI.btn_picker_manual, item.name, UI.manual_color)
+                    end
                 else
-                    label = item.name .. info_str
-                    bg = UI.btn_picker_bg
-                    lcolor = UI.text_color
+                    local bg, label, lcolor
+                    local info_str = item.info and item.info ~= '' and ('  [%s]'):format(item.info) or ''
+
+                    if item.type == 'select' then
+                        local marker = item.is_current and '>> ' or '   '
+                        label = marker .. item.name .. info_str
+                        bg = item.is_current and UI.btn_picker_sel or UI.btn_picker_bg
+                        lcolor = item.is_current and UI.on_color or UI.text_color
+                    elseif item.type == 'remove' then
+                        label = '[x] ' .. item.name .. info_str
+                        bg = UI.btn_picker_sel
+                        lcolor = UI.on_color
+                    elseif item.type == 'add' then
+                        label = '[+] ' .. item.name .. info_str
+                        bg = UI.btn_picker_add
+                        lcolor = UI.add_color
+                    elseif item.type == 'manual_add' then
+                        label = item.name
+                        bg = UI.btn_picker_manual
+                        lcolor = UI.manual_color
+                    else
+                        label = item.name .. info_str
+                        bg = UI.btn_picker_bg
+                        lcolor = UI.text_color
+                    end
+                    show_btn(key, rc, bg, label, lcolor)
                 end
-                show_btn(key, rc, bg, label, lcolor)
             else
                 show_btn(key, nil)
             end
@@ -769,7 +883,13 @@ local function apply_layout()
         set_vis(prims.picker_bg, false); set_vis(prims.picker_border, false)
         show_btn('picker_close', nil)
         show_btn('picker_prev', nil); show_btn('picker_next', nil)
-        for s = 0, 9 do show_btn('pick_' .. s, nil) end
+        for s = 0, 9 do 
+            show_btn('pick_' .. s, nil) 
+            show_btn('pick_up_' .. s, nil)
+            show_btn('pick_dn_' .. s, nil)
+            show_btn('pick_ro_' .. s, nil)
+            show_btn('pick_rm_' .. s, nil)
+        end
     end
 end
 
@@ -814,12 +934,12 @@ local function handle_click(key)
 
     elseif key == 'limit_btn' then
         if ref_settings then
-            local current = ref_settings.max_pcs or 6
+            local current = ref_settings.max_carries or 5
             local next_limit = current + 1
-            if next_limit > 6 then next_limit = 1 end
-            ref_settings.max_pcs = next_limit
+            if next_limit > 5 then next_limit = 0 end
+            ref_settings.max_carries = next_limit
             ref_settings:save()
-            windower.add_to_chat(200, 'PartyManager: Max PCs set to ' .. next_limit .. '.')
+            windower.add_to_chat(200, 'PartyManager: Max Carry PCs set to ' .. next_limit .. '.')
             M.update()
         end
 
@@ -835,6 +955,10 @@ local function handle_click(key)
     elseif key == 'whitelist_btn' then
         if picker_open and picker_type == 'whitelist' then close_picker()
         else open_picker('whitelist') end
+
+    elseif key == 'priority_btn' then
+        if picker_open and picker_type == 'priority' then close_picker()
+        else open_picker('priority') end
 
     elseif key:sub(1, 7) == 'trust_p' and key:len() == 8 then
         local ptype = key
@@ -857,6 +981,22 @@ local function handle_click(key)
             windower.add_to_chat(200, 'PartyManager: Auto Trust Resummon ' .. s .. '.')
         end
 
+    elseif key == 'dynamic_toggle' then
+        if ref_settings then
+            ref_settings.use_dynamic_trusts = not (ref_settings.use_dynamic_trusts or false)
+            ref_settings:save()
+            local s = ref_settings.use_dynamic_trusts and 'ON' or 'OFF'
+            windower.add_to_chat(200, 'PartyManager: Dynamic Trusts ' .. s .. '.')
+        end
+
+    elseif key == 'debug_toggle' then
+        if ref_settings then
+            ref_settings.debug_mode = not (ref_settings.debug_mode or false)
+            ref_settings:save()
+            local s = ref_settings.debug_mode and 'ON' or 'OFF'
+            windower.add_to_chat(200, 'PartyManager: Debug Mode ' .. s .. '.')
+        end
+
     elseif key == 'picker_close' then
         close_picker()
 
@@ -868,13 +1008,55 @@ local function handle_click(key)
         if picker_page < total then picker_page = picker_page + 1 end
 
     elseif key:sub(1, 5) == 'pick_' then
-        local slot = tonumber(key:sub(6))
+        local slot = tonumber(key:match('^pick_(%d)$'))
+        local action = 'select'
+        if not slot then
+            action = key:match('^pick_([a-z]+)_%d$')
+            slot = tonumber(key:match('^pick_[a-z]+_(%d)$'))
+        end
         local idx = (picker_page - 1) * UI.items_per_page + 1 + slot
         local item = picker_data[idx]
         if not item then return end
 
+        -- === PRIORITY PICKER ===
+        if picker_type == 'priority' then
+            if action == 'up' then
+                if idx > 1 then
+                    local t = ref_settings.trust_priority
+                    t[idx], t[idx-1] = t[idx-1], t[idx]
+                    ref_settings:save()
+                end
+            elseif action == 'dn' then
+                if idx < #ref_settings.trust_priority then
+                    local t = ref_settings.trust_priority
+                    t[idx], t[idx+1] = t[idx+1], t[idx]
+                    ref_settings:save()
+                end
+            elseif action == 'rm' then
+                table.remove(ref_settings.trust_priority, idx)
+                ref_settings:save()
+            elseif action == 'ro' then
+                local cur_role = ref_settings.trust_roles[item.name] or 'None'
+                local next_role = ROLES[1]
+                for i, r in ipairs(ROLES) do
+                    if r == cur_role then
+                        next_role = ROLES[i+1] or ROLES[1]
+                        break
+                    end
+                end
+                if next_role == 'None' then
+                    ref_settings.trust_roles[item.name] = nil
+                else
+                    ref_settings.trust_roles[item.name] = next_role
+                end
+                ref_settings:save()
+            elseif item.type == 'manual_add_priority' then
+                prefill_chat('//pm priority add ')
+            end
+            refresh_picker_data()
+
         -- === PULLER PICKER ===
-        if picker_type == 'puller' then
+        elseif picker_type == 'puller' then
             if ref_settings then
                 ref_settings.puller.name = item.name
                 ref_settings:save()
