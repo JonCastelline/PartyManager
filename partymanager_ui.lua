@@ -108,11 +108,11 @@ local prims = {
 local BTN_KEYS = {
     'toggle', 'expand',
     'puller_btn', 'sync_mode', 'sync_target_btn',
-    'password_btn', 'limit_btn',
+    'password_btn', 'limit_btn', 'healer_limit', 'dps_limit',
     'reset', 'puller_stop', 'puller_start',
     'whitelist_btn', 'priority_btn',
     'trust_p1', 'trust_p2', 'trust_p3', 'trust_p4', 'trust_p5',
-    'auto_sync', 'auto_trust', 'dynamic_toggle', 'debug_toggle',
+    'auto_sync', 'auto_trust', 'dynamic_toggle', 'debug_toggle', 'pessimistic_toggle',
     'picker_close', 'picker_prev', 'picker_next',
 }
 for i = 0, 9 do 
@@ -506,15 +506,17 @@ local function compute_rects()
             cur_y = cur_y + UI.btn_h + UI.gap
         end
 
-        -- Row: [PW: Password] [CarLimit: 5]
-        local pw_w = math.floor(w * 0.7)
+        -- Row: [PW: Password] [CarMax: 5]
+        local pw_w = math.floor(w * 0.65)
         local lim_w = w - pw_w - UI.gap
-        r['limit_btn'] = {x = bx, y = cur_y, w = pw_w, h = UI.btn_h}
-        r['limit_btn'] = {x = bx + pw_w + UI.gap, y = cur_y, w = lim_w, h = UI.btn_h}
-        
-        -- Need to fix the overlapping key above, correctly:
         r['password_btn'] = {x = bx, y = cur_y, w = pw_w, h = UI.btn_h}
         r['limit_btn'] = {x = bx + pw_w + UI.gap, y = cur_y, w = lim_w, h = UI.btn_h}
+        cur_y = cur_y + UI.btn_h + UI.gap
+
+        -- Row: [HealerMax: 2] [DPSMax: 3]
+        local hw = math.floor((w - UI.gap) / 2)
+        r['healer_limit'] = {x = bx, y = cur_y, w = hw, h = UI.btn_h}
+        r['dps_limit'] = {x = bx + hw + UI.gap, y = cur_y, w = hw, h = UI.btn_h}
         cur_y = cur_y + UI.btn_h + UI.gap
 
         -- Row: [Reset] [Puller Stop] [Puller Start]
@@ -547,6 +549,10 @@ local function compute_rects()
         local dbg_w = w - dyn_w - UI.gap
         r['dynamic_toggle'] = {x = bx, y = cur_y, w = dyn_w, h = UI.btn_h}
         r['debug_toggle'] = {x = bx + dyn_w + UI.gap, y = cur_y, w = dbg_w, h = UI.btn_h}
+        cur_y = cur_y + UI.btn_h + UI.gap
+
+        -- Row: [Pessimistic Mode: ON/OFF]
+        r['pessimistic_toggle'] = {x = bx, y = cur_y, w = w, h = UI.btn_h}
         cur_y = cur_y + UI.btn_h + UI.gap
     else
         -- Collapsed
@@ -701,7 +707,18 @@ local function apply_layout()
         -- Limit button
         local lim = ref_settings and ref_settings.max_carries or 5
         show_btn('limit_btn', rects['limit_btn'], UI.btn_bg,
-            'CarryMax: ' .. lim, UI.text_color)
+            'CarMax: ' .. lim, UI.text_color)
+
+        -- Healer Limit button
+        local hlim = ref_settings and ref_settings.max_healers or 2
+        show_btn('healer_limit', rects['healer_limit'], UI.btn_bg,
+            'HealerMax: ' .. hlim, hlim > 0 and UI.on_color or UI.text_color)
+
+        -- DPS Limit button
+        local dlim = ref_settings and ref_settings.max_dps or 3
+        show_btn('dps_limit', rects['dps_limit'], UI.btn_bg,
+            'DPSMax: ' .. dlim, dlim > 0 and UI.on_color or UI.text_color)
+
 
 
         -- Reset / Puller Stop / Puller Start
@@ -780,6 +797,13 @@ local function apply_layout()
             debug_on and UI.btn_on or UI.btn_bg,
             debug_on and 'Debug Mode: ' .. (debug_on and 'ON' or 'OFF'),
             debug_on and UI.on_color or UI.muted_color)
+
+        -- Pessimistic toggle
+        local pessimistic_on = ref_settings and ref_settings.pessimistic_mode or false
+        show_btn('pessimistic_toggle', rects['pessimistic_toggle'],
+            pessimistic_on and UI.btn_on or UI.btn_bg,
+            pessimistic_on and 'Pessimistic Mode: ' .. (pessimistic_on and 'ON' or 'OFF'),
+            pessimistic_on and UI.on_color or UI.muted_color)
     else
         -- Collapsed
         local state_label = 'State: ' .. (state_info.name or 'IDLE')
@@ -789,15 +813,20 @@ local function apply_layout()
         -- Hide party slots
         for i = 0, 5 do hide_info('info_p' .. i) end
 
-        for _, key in ipairs({'puller_btn','sync_mode','sync_target_btn','password_btn','limit_btn',
-            'reset','puller_stop','puller_start',
-            'whitelist_btn','priority_btn','trust_p1','trust_p2','trust_p3','trust_p4','trust_p5',
-            'auto_sync','auto_trust','dynamic_toggle'}) do
-            show_btn(key, nil)
+        for _, key in ipairs(BTN_KEYS) do
+            if key ~= 'toggle' and key ~= 'expand' then
+                show_btn(key, nil)
+            end
         end
         set_vis(prims.picker_bg, false); set_vis(prims.picker_border, false)
         show_btn('picker_close', nil); show_btn('picker_prev', nil); show_btn('picker_next', nil)
-        for s = 0, 9 do show_btn('pick_' .. s, nil) end
+        for s = 0, 9 do 
+            show_btn('pick_' .. s, nil) 
+            show_btn('pick_up_' .. s, nil)
+            show_btn('pick_dn_' .. s, nil)
+            show_btn('pick_ro_' .. s, nil)
+            show_btn('pick_rm_' .. s, nil)
+        end
         return
     end
 
@@ -943,6 +972,28 @@ local function handle_click(key)
             M.update()
         end
 
+    elseif key == 'healer_limit' then
+        if ref_settings then
+            local current = ref_settings.max_healers or 2
+            local next_limit = current + 1
+            if next_limit > 5 then next_limit = 0 end
+            ref_settings.max_healers = next_limit
+            ref_settings:save()
+            windower.add_to_chat(200, 'PartyManager: Max Healer PCs set to ' .. next_limit .. '.')
+            M.update()
+        end
+
+    elseif key == 'dps_limit' then
+        if ref_settings then
+            local current = ref_settings.max_dps or 3
+            local next_limit = current + 1
+            if next_limit > 5 then next_limit = 0 end
+            ref_settings.max_dps = next_limit
+            ref_settings:save()
+            windower.add_to_chat(200, 'PartyManager: Max DPS PCs set to ' .. next_limit .. '.')
+            M.update()
+        end
+
     elseif key == 'reset' then
         safe_send('pm reset')
 
@@ -995,6 +1046,16 @@ local function handle_click(key)
             ref_settings:save()
             local s = ref_settings.debug_mode and 'ON' or 'OFF'
             windower.add_to_chat(200, 'PartyManager: Debug Mode ' .. s .. '.')
+            M.update()
+        end
+
+    elseif key == 'pessimistic_toggle' then
+        if ref_settings then
+            ref_settings.pessimistic_mode = not (ref_settings.pessimistic_mode or false)
+            ref_settings:save()
+            local s = ref_settings.pessimistic_mode and 'ON' or 'OFF'
+            windower.add_to_chat(200, 'PartyManager: Pessimistic Mode ' .. s .. '.')
+            M.update()
         end
 
     elseif key == 'picker_close' then

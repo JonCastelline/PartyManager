@@ -32,6 +32,8 @@ defaults.enabled = true
 defaults.whitelist = S{}
 defaults.password = nil
 defaults.max_carries = 5
+defaults.max_healers = 2
+defaults.max_dps = 3
 defaults.puller = {
     name = nil,
     stop_cmd = '//trust stop',
@@ -50,6 +52,7 @@ defaults.reply_msg = "Wait a moment, preparing for invite..."
 defaults.auto_level_sync = false
 defaults.auto_trust_resummon = false 
 defaults.debug_mode = false
+defaults.pessimistic_mode = false
 
 -- Dynamic Trust Settings
 defaults.use_dynamic_trusts = true
@@ -179,9 +182,57 @@ local function get_carry_count()
         local m = party['p' .. i]
         if m and m.name and m.name ~= '' then
             if not m.mob or not m.mob.is_npc then
-                local data = party_data[m.name]
+                local data = party_data[normalize(m.name)]
                 if data and data.is_carry then
                     count = count + 1
+                end
+            end
+        end
+    end
+    return count
+end
+
+local function get_role_for_job(job_id)
+    if not job_id or job_id == 0 then return nil end
+    return settings.job_roles[job_id] or settings.job_roles[tostring(job_id)]
+end
+
+local function get_role_count(role_name)
+    local party = windower.ffxi.get_party()
+    if not party then return 0 end
+    local count = 0
+    
+    -- Check Self
+    local player = windower.ffxi.get_player()
+    if player then
+        local my_role = get_role_for_job(player.main_job_id)
+        if my_role == role_name then
+            count = count + 1
+        end
+    end
+
+    -- Check other PCs
+    for i = 1, 5 do
+        local m = party['p' .. i]
+        if m and m.name and m.name ~= '' then
+            if not m.mob or not m.mob.is_npc then
+                local name = normalize(m.name)
+                local data = party_data[name]
+                
+                if not (data and data.is_carry) then
+                    local role = nil
+                    if data and data.requested_role then
+                        role = data.requested_role
+                    else
+                        role = get_role_for_job(m.job)
+                        if not role and data and data.main_job then
+                            role = get_role_for_job(data.main_job)
+                        end
+                    end
+                    
+                    if role == role_name then
+                        count = count + 1
+                    end
                 end
             end
         end
@@ -222,10 +273,10 @@ local function send_puller_cmd(cmd)
     local player_name = player.name:lower()
     local puller_name = settings.puller.name and settings.puller.name:lower() or player_name
     
+    local clean_cmd = cmd:gsub('^/+', '')
     if puller_name == player_name then
-        windower.send_command(cmd)
+        windower.send_command(clean_cmd)
     else
-        local clean_cmd = cmd:gsub('^/+', '')
         windower.send_command('input /console send ' .. settings.puller.name .. ' ' .. clean_cmd)
     end
 end
@@ -305,11 +356,11 @@ local function get_lowest_ml_pc()
         if m and m.name and m.name ~= '' then
             -- If mob info is available, check if it's an NPC (trust).
             if not m.mob or not m.mob.is_npc then
-                local data = party_data[m.name]
+                local data = party_data[normalize(m.name)]
                 if data and data.master_level and data.master_level >= 0 then
                     if data.master_level < lowest_ml then
                         lowest_ml = data.master_level
-                        lowest_name = m.name
+                        lowest_name = normalize(m.name)
                     end
                 end
             end
@@ -331,10 +382,6 @@ local function get_current_sync_target()
     return nil
 end
 
-local function get_role_for_job(job_id)
-    if not job_id or job_id == 0 then return nil end
-    return settings.job_roles[job_id] or settings.job_roles[tostring(job_id)]
-end
 
 local function get_dynamic_trust_list(force_verbose)
     local pc_count = get_pc_count()
@@ -378,6 +425,11 @@ local function get_dynamic_trust_list(force_verbose)
                         source = '0x0DD'
                     end
                     
+                    if data and data.requested_role then
+                        role = data.requested_role
+                        source = 'Flag'
+                    end
+                    
                     if verbose then
                         windower.add_to_chat(200, debug_str .. ' JobID: ' .. tostring(job_id or 0) .. ' -> Role: ' .. (role or 'None') .. ' (Source: ' .. source .. ')')
                     end
@@ -405,6 +457,101 @@ local function get_dynamic_trust_list(force_verbose)
         end
     end
     return list
+end
+
+local function validate_composition(new_player_role, is_carry)
+    local current_pc_count = get_pc_count()
+    local next_pc_count = current_pc_count + 1
+    
+    if next_pc_count > 6 then return false, "Party is full." end
+    
+    -- Roles covered by human PCs after join
+    local covered_by_pcs = {}
+    
+    -- Add self
+    local player = windower.ffxi.get_player()
+    if player then
+        local self_role = get_role_for_job(player.main_job_id)
+        if self_role then covered_by_pcs[self_role] = true end
+    end
+    
+    -- Add existing other PCs
+    local party = windower.ffxi.get_party()
+    for i = 1, 5 do
+        local m = party['p' .. i]
+        if m and m.name and m.name ~= '' and (not m.mob or not m.mob.is_npc) then
+            local name = normalize(m.name)
+            local data = party_data[name]
+            if not (data and data.is_carry) then
+                local role = nil
+                if data and data.requested_role then
+                    role = data.requested_role
+                else
+                    role = get_role_for_job(m.job)
+                    if not role and data and data.main_job then
+                        role = get_role_for_job(data.main_job)
+                    end
+                end
+                if role then covered_by_pcs[role] = true end
+            end
+        end
+    end
+    
+    -- Add the new player (if not carry)
+    if not is_carry and new_player_role then
+        covered_by_pcs[new_player_role] = true
+    end
+    
+    -- Now simulate trust selection
+    local simulated_trusts = {}
+    local slots = 6 - next_pc_count
+    
+    if settings.use_dynamic_trusts then
+        local temp_covered = {}
+        for k,v in pairs(covered_by_pcs) do temp_covered[k] = v end
+        
+        for _, trust_name in ipairs(settings.trust_priority) do
+            if #simulated_trusts >= slots then break end
+            local role = nil
+            for _, entry in ipairs(settings.trust_roles) do
+                if entry.name == trust_name then role = entry.role break end
+            end
+            
+            if not role or role == 'None' or not temp_covered[role] then
+                table.insert(simulated_trusts, trust_name)
+                if role and role ~= 'None' then temp_covered[role] = true end
+            end
+        end
+    else
+        local fixed_list = get_trust_list(next_pc_count)
+        for _, n in ipairs(fixed_list) do table.insert(simulated_trusts, n) end
+    end
+    
+    -- Combine PC roles and Trust roles for final check
+    local final_coverage = {}
+    for k,v in pairs(covered_by_pcs) do final_coverage[k] = v end
+    
+    for _, tname in ipairs(simulated_trusts) do
+        for _, entry in ipairs(settings.trust_roles) do
+            if entry.name == tname then
+                if entry.role and entry.role ~= 'None' then
+                    final_coverage[entry.role] = true
+                end
+                break
+            end
+        end
+    end
+    
+    -- Check minimums
+    local has_healer = final_coverage["HEALER"]
+    local has_dps = final_coverage["DPS"]
+    local has_support = final_coverage["BRD"] or final_coverage["GEO"] or final_coverage["COR"] or final_coverage["RDM"] or final_coverage["SUPPORT"]
+    
+    if not has_healer then return false, "This would leave the party without a healer." end
+    if not has_support then return false, "This would leave the party without support." end
+    if not has_dps then return false, "This would leave the party without a damage dealer." end
+    
+    return true
 end
 
 -- UI INITIALIZATION
@@ -506,6 +653,26 @@ windower.register_event('addon command', function(command, ...)
         else
             windower.add_to_chat(200, 'PartyManager: Invalid limit. Use 0-5.')
         end
+    elseif command == 'healerlimit' then
+        local val = tonumber(args[1])
+        if val and val >= 0 and val <= 5 then
+            settings.max_healers = val
+            settings:save()
+            windower.add_to_chat(200, 'PartyManager: Max Healer PCs set to ' .. val .. '.')
+            pm_ui.update()
+        else
+            windower.add_to_chat(200, 'PartyManager: Invalid limit. Use 0-5.')
+        end
+    elseif command == 'dpslimit' then
+        local val = tonumber(args[1])
+        if val and val >= 0 and val <= 5 then
+            settings.max_dps = val
+            settings:save()
+            windower.add_to_chat(200, 'PartyManager: Max DPS PCs set to ' .. val .. '.')
+            pm_ui.update()
+        else
+            windower.add_to_chat(200, 'PartyManager: Invalid limit. Use 0-5.')
+        end
     elseif command == 'password' then
         local val = args[1]
         settings.password = val
@@ -588,6 +755,15 @@ windower.register_event('addon command', function(command, ...)
         end
         settings:save()
         windower.add_to_chat(200, 'PartyManager: Debug Mode: ' .. (settings.debug_mode and 'ON' or 'OFF'))
+    elseif command == 'pessimistic' then
+        local val = args[1] and args[1]:lower()
+        if val == 'on' then
+            settings.pessimistic_mode = true
+        elseif val == 'off' then
+            settings.pessimistic_mode = false
+        end
+        settings:save()
+        windower.add_to_chat(200, 'PartyManager: Pessimistic Mode: ' .. (settings.pessimistic_mode and 'ON' or 'OFF'))
     elseif command == 'priority' then
         local sub = args[1] and args[1]:lower()
         local val = args[2]
@@ -676,6 +852,9 @@ windower.register_event('addon command', function(command, ...)
     elseif command == 'status' then
         windower.add_to_chat(200, 'PartyManager Status: ' .. (settings.enabled and 'Enabled' or 'Disabled'))
         windower.add_to_chat(200, 'Current State: ' .. (state_names[current_state] or 'UNKNOWN'))
+        windower.add_to_chat(200, 'Puller Name: ' .. tostring(settings.puller.name))
+        windower.add_to_chat(200, 'Start Cmd: ' .. tostring(settings.puller.start_cmd))
+        windower.add_to_chat(200, 'Stop Cmd: ' .. tostring(settings.puller.stop_cmd))
     elseif command == 'ui' then
         pm_ui.toggle('main')
     elseif command == 'ui_refresh' then
@@ -749,28 +928,51 @@ windower.register_event('incoming chunk', function(id, data)
                     if already_in_party then
                         windower.send_command('input /t ' .. sender .. ' You are already in the party.')
                     elseif get_pc_count() < 6 then
-                        -- Check carry limit if requesting carry
                         local is_carry_req = msg_lower:contains('--carry')
-                        if is_carry_req and get_carry_count() >= settings.max_carries then
-                            windower.send_command('input /t ' .. sender .. ' Sorry, the party is full.')
-                        else
-                            target_player = sender
-                            initial_pc_count = get_pc_count()
-                            
-                            -- Parse flags
-                            party_data[sender] = party_data[sender] or {}
-                            party_data[sender].is_carry = is_carry_req
-                            party_data[sender].requested_role = nil
-                            
-                            if not is_carry_req then
-                                if msg_lower:contains('--dps') then
-                                    party_data[sender].requested_role = 'DPS'
-                                elseif msg_lower:contains('--healer') then
-                                    party_data[sender].requested_role = 'HEALER'
-                                end
+                        local requested_role = nil
+                        
+                        -- 1. Check for explicit role flags
+                        if msg_lower:contains('--dps') then
+                            requested_role = 'DPS'
+                        elseif msg_lower:contains('--healer') then
+                            requested_role = 'HEALER'
+                        elseif msg_lower:contains('--support') then
+                            requested_role = 'SUPPORT'
+                        end
+
+                        -- 2. Apply Default Assumption if no flags were provided
+                        if not requested_role and not is_carry_req then
+                            if settings.pessimistic_mode then
+                                is_carry_req = true -- Default to Carry
+                            else
+                                requested_role = 'DPS' -- Default to DPS
                             end
-                            
-                            current_state = states.REPLYING
+                        end
+
+                        -- 3. Enforce Limits
+                        if is_carry_req and get_carry_count() >= settings.max_carries then
+                            windower.send_command('input /t ' .. sender .. ' Sorry, the carry slots are full.')
+                        elseif requested_role == 'HEALER' and get_role_count('HEALER') >= settings.max_healers then
+                            windower.send_command('input /t ' .. sender .. ' Sorry, the healer slots are full.')
+                        elseif requested_role == 'DPS' and get_role_count('DPS') >= settings.max_dps then
+                            windower.send_command('input /t ' .. sender .. ' Sorry, the DPS slots are full.')
+                        else
+                            -- 4. Check Composition Protection (Future Vision)
+                            local ok, err = validate_composition(requested_role, is_carry_req)
+                            if not ok then
+                                windower.add_to_chat(200, 'PartyManager: Rejected ' .. sender .. ' - ' .. err)
+                                windower.send_command('input /t ' .. sender .. ' Sorry, ' .. err:lower():gsub('%.', '') .. '.')
+                            else
+                                target_player = sender
+                                initial_pc_count = get_pc_count()
+                                
+                                -- Save state for this player
+                                party_data[sender] = party_data[sender] or {}
+                                party_data[sender].is_carry = is_carry_req
+                                party_data[sender].requested_role = requested_role
+                                
+                                current_state = states.REPLYING
+                            end
                         end
                     else
                         windower.send_command('input /t ' .. sender .. ' Sorry, the party is full.')
