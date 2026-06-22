@@ -125,6 +125,7 @@ local trust_summon_attempt_time = 0
 local last_pc_count = 1
 local sync_off_time = 0
 local last_msg_time = 0 -- For periodic messages
+local active_sync_target = nil
 
 -- Party member data tracking
 local party_data = {}
@@ -371,15 +372,33 @@ local function get_lowest_ml_pc()
 end
 
 local function get_current_sync_target()
-    local party = windower.ffxi.get_party()
-    if not party then return nil end
-    for i = 0, 5 do
-        local m = party['p' .. i]
-        if m and m.name and m.name ~= '' and m.level_sync then
-            return normalize(m.name)
+    -- Check if player has the Level Sync buff (269)
+    local player = windower.ffxi.get_player()
+    if not player or not player.buffs then
+        active_sync_target = nil
+        return nil
+    end
+    
+    local has_sync_buff = false
+    for _, buff_id in ipairs(player.buffs) do
+        if buff_id == 269 then
+            has_sync_buff = true
+            break
         end
     end
-    return nil
+    
+    if not has_sync_buff then
+        active_sync_target = nil
+        return nil
+    end
+    
+    -- If we have the buff but active_sync_target is nil (e.g. after a reload),
+    -- return a special name "Unknown" to trigger a mismatch and force a desync.
+    if not active_sync_target then
+        return "Unknown"
+    end
+    
+    return active_sync_target
 end
 
 
@@ -898,6 +917,7 @@ windower.register_event('addon command', function(command, ...)
     elseif command == 'reset' then
         current_state = states.IDLE
         target_player = nil
+        active_sync_target = nil
         trust_summon_initial = true
         windower.add_to_chat(200, 'PartyManager: Reset to IDLE.')
     elseif command == 'status' then
@@ -1211,6 +1231,7 @@ windower.register_event('prerender', function()
             else
                 windower.add_to_chat(200, 'PartyManager: Deactivating Level Sync (Cooldown: 30s).')
                 send_level_sync_packet(player.name, 0x07)
+                active_sync_target = nil
                 current_state = states.WAITING_FOR_SYNC_OFF
                 sync_off_time = os.time()
                 last_msg_time = 0
@@ -1254,6 +1275,7 @@ windower.register_event('prerender', function()
             coroutine.schedule(function()
                 windower.add_to_chat(200, 'PartyManager: Injecting Level Sync packet (0x077) for ' .. sync_target_name .. '.')
                 send_level_sync_packet(sync_target_name, 0x06)
+                active_sync_target = normalize(sync_target_name)
                 -- Syncing resets the trust cooldown timer!
                 invite_time = os.time()
                 current_state = states.SUMMONING_TRUSTS
@@ -1332,6 +1354,7 @@ windower.register_event('prerender', function()
         send_puller_cmd(settings.puller.start_cmd)
         current_state = states.IDLE
         target_player = nil
+        active_sync_target = nil
         last_action_time = now
         windower.add_to_chat(200, 'PartyManager: Process complete.')
     end
