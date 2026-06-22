@@ -383,79 +383,144 @@ local function get_current_sync_target()
 end
 
 
-local function get_dynamic_trust_list(force_verbose)
-    local pc_count = get_pc_count()
+local function get_dynamic_trust_list(force_verbose, override_pc_roles, override_pc_count)
+    local pc_count = override_pc_count or get_pc_count()
     local slots_available = 6 - pc_count
     if slots_available <= 0 then return {} end
 
     local verbose = force_verbose or settings.debug_mode
     local covered_roles = {}
-    local party = windower.ffxi.get_party()
     
-    -- Check Self
-    local player = windower.ffxi.get_player()
-    if player then
-        local role = get_role_for_job(player.main_job_id)
-        if verbose then
-            windower.add_to_chat(200, 'PartyManager: [DEBUG] PC: ' .. normalize(player.name) .. ' (Self) JobID: ' .. tostring(player.main_job_id) .. ' -> Role: ' .. (role or 'None'))
+    if override_pc_roles then
+        for k, v in pairs(override_pc_roles) do
+            covered_roles[k] = v
         end
-        if role then covered_roles[role] = true end
-    end
+    else
+        -- Check Self
+        local player = windower.ffxi.get_player()
+        if player then
+            local role = get_role_for_job(player.main_job_id)
+            if verbose then
+                windower.add_to_chat(200, 'PartyManager: [DEBUG] PC: ' .. normalize(player.name) .. ' (Self) JobID: ' .. tostring(player.main_job_id) .. ' -> Role: ' .. (role or 'None'))
+            end
+            if role then covered_roles[role] = true end
+        end
 
-    -- Check other PCs
-    for i = 1, 5 do
-        local m = party['p' .. i]
-        if m and m.name and m.name ~= '' then
-            if not m.mob or not m.mob.is_npc then
-                local name = normalize(m.name)
-                local data = party_data[name]
-                
-                local debug_str = 'PartyManager: [DEBUG] PC: ' .. name
-                
-                if data and data.is_carry then
-                    if verbose then windower.add_to_chat(200, debug_str .. ' (Carry) - Skipping role detection.') end
-                else
-                    local job_id = m.job
-                    local role = get_role_for_job(job_id)
-                    local source = 'get_party()'
-                    
-                    if not role and data and data.main_job then
-                        job_id = data.main_job
-                        role = get_role_for_job(job_id)
-                        source = '0x0DD'
+        -- Check other PCs
+        local party = windower.ffxi.get_party()
+        if party then
+            for i = 1, 5 do
+                local m = party['p' .. i]
+                if m and m.name and m.name ~= '' then
+                    if not m.mob or not m.mob.is_npc then
+                        local name = normalize(m.name)
+                        local data = party_data[name]
+                        
+                        local debug_str = 'PartyManager: [DEBUG] PC: ' .. name
+                        
+                        if data and data.is_carry then
+                            if verbose then windower.add_to_chat(200, debug_str .. ' (Carry) - Skipping role detection.') end
+                        else
+                            local job_id = m.job
+                            local role = get_role_for_job(job_id)
+                            local source = 'get_party()'
+                            
+                            if not role and data and data.main_job then
+                                job_id = data.main_job
+                                role = get_role_for_job(job_id)
+                                source = '0x0DD'
+                            end
+                            
+                            if data and data.requested_role then
+                                role = data.requested_role
+                                source = 'Flag'
+                            end
+                            
+                            if verbose then
+                                windower.add_to_chat(200, debug_str .. ' JobID: ' .. tostring(job_id or 0) .. ' -> Role: ' .. (role or 'None') .. ' (Source: ' .. source .. ')')
+                            end
+                            
+                            if role then covered_roles[role] = true end
+                        end
                     end
-                    
-                    if data and data.requested_role then
-                        role = data.requested_role
-                        source = 'Flag'
-                    end
-                    
-                    if verbose then
-                        windower.add_to_chat(200, debug_str .. ' JobID: ' .. tostring(job_id or 0) .. ' -> Role: ' .. (role or 'None') .. ' (Source: ' .. source .. ')')
-                    end
-                    
-                    if role then covered_roles[role] = true end
                 end
             end
         end
     end
 
+    -- Identify missing core roles that we MUST fill
+    local needs_healer = not covered_roles["HEALER"]
+    local needs_dps = not covered_roles["DPS"]
+    local needs_support = not (covered_roles["BRD"] or covered_roles["GEO"] or covered_roles["COR"] or covered_roles["RDM"] or covered_roles["SUPPORT"])
+    
     local list = {}
-    for _, trust_name in ipairs(settings.trust_priority) do
-        local role = nil
+    local selected_roles = {}
+    
+    -- Helper to get a trust's role
+    local function get_trust_role(trust_name)
         for _, entry in ipairs(settings.trust_roles) do
-            if entry.name == trust_name then
-                role = entry.role
-                break
+            if entry.name == trust_name then return entry.role end
+        end
+        return nil
+    end
+
+    -- Phase 1: Try to fill required/missing core roles first
+    -- Only do this if we actually have unfilled core roles and trust slots available
+    if (needs_healer or needs_dps or needs_support) and slots_available > 0 then
+        for _, trust_name in ipairs(settings.trust_priority) do
+            if #list >= slots_available then break end
+            
+            local role = get_trust_role(trust_name)
+            local is_needed = false
+            
+            if role == "HEALER" and needs_healer then
+                is_needed = true
+                needs_healer = false
+            elseif role == "DPS" and needs_dps then
+                is_needed = true
+                needs_dps = false
+            elseif (role == "BRD" or role == "GEO" or role == "COR" or role == "RDM" or role == "SUPPORT") and needs_support then
+                is_needed = true
+                needs_support = false
+            end
+            
+            if is_needed then
+                table.insert(list, trust_name)
+                if role and role ~= 'None' then
+                    selected_roles[role] = true
+                end
             end
         end
+    end
 
-        if not role or role == 'None' or not covered_roles[role] then
-            table.insert(list, trust_name)
-            if role and role ~= 'None' then covered_roles[role] = true end
-            if #list >= slots_available then break end
+    -- Phase 2: Fill remaining slots using standard priority
+    for _, trust_name in ipairs(settings.trust_priority) do
+        if #list >= slots_available then break end
+        
+        -- Check if already added in Phase 1
+        local already_selected = false
+        for _, name in ipairs(list) do
+            if name == trust_name then already_selected = true break end
+        end
+        
+        if not already_selected then
+            local role = get_trust_role(trust_name)
+            
+            -- If the role is not covered by PCs OR by already selected trusts, or if it's 'None'
+            local role_covered = false
+            if role and role ~= 'None' then
+                role_covered = covered_roles[role] or selected_roles[role]
+            end
+            
+            if not role or role == 'None' or not role_covered then
+                table.insert(list, trust_name)
+                if role and role ~= 'None' then
+                    selected_roles[role] = true
+                end
+            end
         end
     end
+    
     return list
 end
 
@@ -507,21 +572,7 @@ local function validate_composition(new_player_role, is_carry)
     local slots = 6 - next_pc_count
     
     if settings.use_dynamic_trusts then
-        local temp_covered = {}
-        for k,v in pairs(covered_by_pcs) do temp_covered[k] = v end
-        
-        for _, trust_name in ipairs(settings.trust_priority) do
-            if #simulated_trusts >= slots then break end
-            local role = nil
-            for _, entry in ipairs(settings.trust_roles) do
-                if entry.name == trust_name then role = entry.role break end
-            end
-            
-            if not role or role == 'None' or not temp_covered[role] then
-                table.insert(simulated_trusts, trust_name)
-                if role and role ~= 'None' then temp_covered[role] = true end
-            end
-        end
+        simulated_trusts = get_dynamic_trust_list(false, covered_by_pcs, next_pc_count)
     else
         local fixed_list = get_trust_list(next_pc_count)
         for _, n in ipairs(fixed_list) do table.insert(simulated_trusts, n) end
