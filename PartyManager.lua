@@ -53,6 +53,7 @@ defaults.auto_level_sync = false
 defaults.auto_trust_resummon = false 
 defaults.debug_mode = false
 defaults.pessimistic_mode = false
+defaults.relay_enabled = false
 
 -- Dynamic Trust Settings
 defaults.use_dynamic_trusts = true
@@ -749,6 +750,20 @@ windower.register_event('addon command', function(command, ...)
         settings:save()
         windower.add_to_chat(200, 'PartyManager: Password set to ' .. (val or '(none)') .. '.')
         pm_ui.update()
+    elseif command == 'relay' then
+        local sub = args[1] and args[1]:lower()
+        if sub == 'on' then
+            settings.relay_enabled = true
+            settings:save()
+            windower.add_to_chat(200, 'PartyManager: Relay output enabled.')
+            write_state_json('STATUS_SNAPSHOT', 'Relay output enabled.')
+        elseif sub == 'off' then
+            settings.relay_enabled = false
+            settings:save()
+            windower.add_to_chat(200, 'PartyManager: Relay output disabled.')
+        else
+            windower.add_to_chat(200, 'PartyManager: Relay output is ' .. (settings.relay_enabled and 'ON' or 'OFF') .. '. Use: //pm relay on/off')
+        end
     elseif command == 'trust' then
         local pc_count_num = tonumber(args[1])
         local sub = args[2] and args[2]:lower()
@@ -959,6 +974,93 @@ local function send_level_sync_packet(target_name, action)
     return true
 end
 
+local last_json_write_time = 0
+
+local function to_json(val)
+    local t = type(val)
+    if t == 'string' then
+        return '"' .. val:gsub('\\', '\\\\'):gsub('"', '\\"'):gsub('\n', '\\n'):gsub('\r', '\\r') .. '"'
+    elseif t == 'number' or t == 'boolean' then
+        return tostring(val)
+    elseif t == 'nil' then
+        return 'null'
+    elseif t == 'table' then
+        local is_array = true
+        local max_idx = 0
+        local count = 0
+        for k, v in pairs(val) do
+            count = count + 1
+            if type(k) == 'number' and k > 0 and math.floor(k) == k then
+                if k > max_idx then max_idx = k end
+            else
+                is_array = false
+            end
+        end
+        if is_array and max_idx == count then
+            local parts = {}
+            for i = 1, max_idx do
+                table.insert(parts, to_json(val[i]))
+            end
+            return '[' .. table.concat(parts, ',') .. ']'
+        else
+            local parts = {}
+            for k, v in pairs(val) do
+                table.insert(parts, '"' .. tostring(k) .. '":' .. to_json(v))
+            end
+            return '{' .. table.concat(parts, ',') .. '}'
+        end
+    else
+        return '"' .. tostring(val) .. '"'
+    end
+end
+
+local function write_state_json(event_type, event_msg)
+    if not settings.relay_enabled then return end
+    local info = windower.ffxi.get_info()
+    local zone_id = info and info.zone or 0
+    local zone_name = zone_id and res.zones[zone_id] and res.zones[zone_id].english or 'Unknown'
+    
+    local party = windower.ffxi.get_party()
+    local party_count = party and party.party1_count or 0
+    local pc_count = get_pc_count()
+    
+    local state_data = {
+        last_updated = os.time(),
+        zone = zone_name,
+        current_state = state_names[current_state] or 'IDLE',
+        sync_mode = settings.sync_mode or 'none',
+        sync_target = active_sync_target or settings.sync_target or '',
+        party_count = party_count,
+        last_pc_count = pc_count,
+    }
+    
+    if event_type then
+        state_data.event_trigger = {
+            source = 'PARTY_MANAGER',
+            type = event_type,
+            message = event_msg or ''
+        }
+    end
+    
+    local json_str = to_json(state_data)
+    
+    local dir_path = windower.addon_path .. '../Heartbeat/data/'
+    windower.create_dir(dir_path)
+    
+    local tmp_path = dir_path .. 'partymanager_state.json.tmp'
+    local dest_path = dir_path .. 'partymanager_state.json'
+    
+    local f = io.open(tmp_path, 'w')
+    if f then
+        f:write(json_str)
+        f:close()
+        os.remove(dest_path)
+        os.rename(tmp_path, dest_path)
+    end
+    last_json_write_time = os.clock()
+end
+
+
 ----------------------------------------------------------------------
 -- STATE MACHINE
 ----------------------------------------------------------------------
@@ -1058,11 +1160,15 @@ windower.register_event('prerender', function()
     pm_ui.tick()
     
     local now = os.clock()
+    if now - last_json_write_time >= 10 then
+        write_state_json('STATUS_SNAPSHOT', 'Status snapshot.')
+    end
     local current_pc_count = get_pc_count()
     
     -- Background monitoring for PC departures
     if settings.enabled then
         if current_pc_count < last_pc_count then
+            write_state_json('MEMBER_LEFT', 'Player left the party.')
             if settings.auto_trust_resummon and current_state == states.IDLE then
                 windower.add_to_chat(200, 'PartyManager: Player left the party. Initiating reconfiguration.')
                 target_player = nil -- Ensure we know it's a resummon
@@ -1140,6 +1246,7 @@ windower.register_event('prerender', function()
         invite_time = os.time()
         current_state = states.WAITING_FOR_JOIN
         last_action_time = now
+        write_state_json('INVITE_SENT', 'Invite sent to ' .. target_player)
 
     elseif current_state == states.WAITING_FOR_JOIN then
         local party = windower.ffxi.get_party()
@@ -1160,6 +1267,7 @@ windower.register_event('prerender', function()
 
         if in_range then
             windower.add_to_chat(200, 'PartyManager: '.. target_player .. ' has joined and is in range.')
+            write_state_json('INVITE_ACCEPTED', target_player .. ' has joined and is in range.')
             if settings.auto_level_sync then
                 current_state = states.TARGETING_FOR_SYNC
                 pm_ui.update()
@@ -1175,6 +1283,7 @@ windower.register_event('prerender', function()
             -- Scenario 1: Not in party after 3 minutes
             if not in_party and elapsed > 180 then
                 windower.add_to_chat(200, 'PartyManager: ' .. target_player .. ' failed to accept invite within 3 minutes. Giving up.')
+                write_state_json('INVITE_TIMED_OUT', target_player .. ' failed to accept invite within 3 minutes.')
                 target_player = nil
                 current_state = states.SUMMONING_TRUSTS
                 last_msg_time = 0
@@ -1184,6 +1293,7 @@ windower.register_event('prerender', function()
             elseif in_party and elapsed > 600 then
                 windower.add_to_chat(200, 'PartyManager: ' .. target_player .. ' failed to arrive within 10 minutes. Kicking and resuming.')
                 windower.send_command('input /pcmd kick ' .. target_player)
+                write_state_json('INVITE_TIMED_OUT', target_player .. ' failed to arrive within 10 minutes.')
                 target_player = nil
                 current_state = states.SUMMONING_TRUSTS
                 last_msg_time = 0
@@ -1236,6 +1346,7 @@ windower.register_event('prerender', function()
                 sync_off_time = os.time()
                 last_msg_time = 0
                 last_action_time = now
+                write_state_json('SYNC_CLEARED', 'Deactivating Level Sync.')
             end
         else
             windower.add_to_chat(200, 'PartyManager: Sync mode set to none or no valid target found. Skipping sync.')
@@ -1276,6 +1387,7 @@ windower.register_event('prerender', function()
                 windower.add_to_chat(200, 'PartyManager: Injecting Level Sync packet (0x077) for ' .. sync_target_name .. '.')
                 send_level_sync_packet(sync_target_name, 0x06)
                 active_sync_target = normalize(sync_target_name)
+                write_state_json('SYNC_REQUESTED', 'Level sync requested for ' .. sync_target_name)
                 -- Syncing resets the trust cooldown timer!
                 invite_time = os.time()
                 current_state = states.SUMMONING_TRUSTS
@@ -1305,6 +1417,7 @@ windower.register_event('prerender', function()
             windower.add_to_chat(200, 'PartyManager: There is a 2 minute cooldown for Trusts after party changes. Starting timer.')
             trust_summon_initial = false
             last_msg_time = now
+            write_state_json('TRUST_SUMMON_STARTED', 'Started summoning trusts.')
         end
         local elapsed = os.time() - invite_time
         if elapsed < 120 then
@@ -1347,6 +1460,7 @@ windower.register_event('prerender', function()
             current_state = states.STARTING_PULLER
             trust_summon_initial = true
             last_action_time = now
+            write_state_json('TRUST_SUMMON_COMPLETE', 'Trust summoning complete.')
         end
 
     elseif current_state == states.STARTING_PULLER then
