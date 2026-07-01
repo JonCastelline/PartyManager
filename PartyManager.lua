@@ -640,6 +640,8 @@ pm_ui.init(
     party_data
 )
 
+local write_state_json
+
 ----------------------------------------------------------------------
 -- COMMAND HANDLER
 ----------------------------------------------------------------------
@@ -1014,7 +1016,7 @@ local function to_json(val)
     end
 end
 
-local function write_state_json(event_type, event_msg)
+write_state_json = function(event_type, event_msg)
     if not settings.relay_enabled then return end
     local info = windower.ffxi.get_info()
     local zone_id = info and info.zone or 0
