@@ -23,6 +23,7 @@ A Windower 4 addon for Final Fantasy XI that automates party management, specifi
 - `//pm whitelist rm <name>`: Remove a player from the whitelist.
 - `//pm password <word>`: Set a trigger password (visible in UI).
 - `//pm carrylimit <0-5>`: Set the maximum number of players allowed to join with the `--carry` flag.
+- `//pm setrole <name|self> <dps|healer|support|carry|none>`: Overrides or clears the role for a player currently in the party. Using `self` targets yourself.
 - `//pm resummon on/off`: Toggle the Auto Trust Resummon feature.
 - `//pm dynamic on/off`: Toggle the Dynamic Trust Management feature.
 - `//pm status`: Check current state and settings.
@@ -35,7 +36,7 @@ A Windower 4 addon for Final Fantasy XI that automates party management, specifi
 - `//pm puller stop/start <command>`: Customize the puller commands (default: `//trust stop/start`).
 
 ### Trust Sets
-Define which trusts to summon based on how many human players (PCs) are in the party (1PC to 5PC).
+Define which trusts to summon based on how many human players (PCs) are in the party (1PC to 6PC).
 - `//pm trust <pc_count> add <trust_name>`: Add a trust to the set for that PC count.
 - `//pm trust <pc_count> clear`: Clear the trust set for that PC count.
 
@@ -47,9 +48,9 @@ Example:
 ```
 
 ## UI Functionality
-- **Live Party List:** Shows all members, their job, and their **Master Level**.
+- **Live Party List:** Shows all members, their job, and their **Master Level**. Hover and click on any human party member (PC) to open a side-panel role picker and assign them a specific role override (DPS, HEALER, SUPPORT, Carry) or clear it.
 - **Responsive Toggles:** Instant visual feedback for addon state, AutoSync, and AutoTrust.
-- **Interactive Pickers:** Click on "Puller," "Whitelist," or any "PC" count to open a side-panel for easy management.
+- **Interactive Pickers:** Click on "Puller," "Whitelist," any "PC" count, or a party member's row to open a side-panel for easy management.
 - **Auto-Truncation:** Handles long passwords and names gracefully within the interface.
 
 ## How It Works (The Cycle)

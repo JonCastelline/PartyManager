@@ -1012,6 +1012,7 @@ windower.register_event('addon command', function(command, ...)
         end
         
         pm_ui.update()
+        write_state_json('STATUS_SNAPSHOT', 'Role updated.')
     elseif command == 'role' then
         local sub = args[1] and args[1]:lower()
         local trust = args[2]
@@ -1142,6 +1143,50 @@ write_state_json = function(event_type, event_msg)
     local party_count = party and party.party1_count or 0
     local pc_count = get_pc_count()
     
+    local resolved_roles = {}
+    if party then
+        -- Self
+        local player = windower.ffxi.get_player()
+        if player then
+            local my_name = normalize(player.name)
+            local data = party_data[my_name]
+            local role = nil
+            if data and data.is_carry then
+                role = 'Carry'
+            elseif data and data.requested_role then
+                role = data.requested_role
+            else
+                role = get_role_for_job(player.main_job_id)
+            end
+            if role then
+                resolved_roles[my_name] = role
+            end
+        end
+        
+        -- Other PCs
+        for i = 1, 5 do
+            local m = party['p' .. i]
+            if m and m.name and m.name ~= '' and (not m.mob or not m.mob.is_npc) then
+                local name = normalize(m.name)
+                local data = party_data[name]
+                local role = nil
+                if data and data.is_carry then
+                    role = 'Carry'
+                elseif data and data.requested_role then
+                    role = data.requested_role
+                else
+                    role = get_role_for_job(m.job)
+                    if not role and data and data.main_job then
+                        role = get_role_for_job(data.main_job)
+                    end
+                end
+                if role then
+                    resolved_roles[name] = role
+                end
+            end
+        end
+    end
+
     local state_data = {
         last_updated = os.time(),
         zone = zone_name,
@@ -1150,6 +1195,7 @@ write_state_json = function(event_type, event_msg)
         sync_target = active_sync_target or settings.sync_target or '',
         party_count = party_count,
         last_pc_count = pc_count,
+        roles = resolved_roles,
     }
     
     if event_type then
