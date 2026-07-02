@@ -145,6 +145,92 @@ local function normalize(name)
     return name:lower():ucfirst()
 end
 
+local function log_packet(text)
+    local f = io.open(windower.addon_path .. 'packet_debug.log', 'a')
+    if f then
+        f:write(os.date('%Y-%m-%d %H:%M:%S') .. ' | ' .. text .. '\n')
+        f:close()
+    end
+end
+
+local function dump_packet_fields(p)
+    local fields = {}
+    for k, v in pairs(p) do
+        fields[#fields+1] = tostring(k) .. ': ' .. tostring(v)
+    end
+    table.sort(fields)
+    return table.concat(fields, ', ')
+end
+
+local function populate_initial_party_data()
+    local player = windower.ffxi.get_player()
+    if player then
+        local my_name = normalize(player.name)
+        party_data[my_name] = party_data[my_name] or {}
+        party_data[my_name].main_job = player.main_job_id
+        party_data[my_name].main_level = player.main_job_level
+        party_data[my_name].sub_job = player.sub_job_id
+        party_data[my_name].sub_level = player.sub_job_level
+        party_data[my_name].master_level = player.master_level or 0
+    end
+
+    local party = windower.ffxi.get_party()
+    if not party then return end
+
+    local targets_to_check = {}
+
+    for i = 1, 5 do
+        local m = party['p' .. i]
+        if m and m.name and m.name ~= '' then
+            if not m.mob or not m.mob.is_npc then
+                local name = normalize(m.name)
+                party_data[name] = party_data[name] or {}
+                if m.job then
+                    party_data[name].main_job = m.job
+                end
+                
+                if m.id and m.id ~= 0 then
+                    local mob = windower.ffxi.get_mob_by_id(m.id)
+                    local idx = mob and mob.index or 0
+                    targets_to_check[#targets_to_check + 1] = {id = m.id, index = idx}
+                end
+            end
+        end
+    end
+    pm_ui.update()
+
+    -- Trigger silent checks with a delay between each check to prevent packet spam
+    -- Only run packet query if relay output is enabled to avoid unnecessary server traffic
+    if settings.relay_enabled and #targets_to_check > 0 then
+        coroutine.schedule(function()
+            for _, t in ipairs(targets_to_check) do
+                -- Double check target is still in party
+                local current_party = windower.ffxi.get_party()
+                local is_still_in_party = false
+                if current_party then
+                    for i = 1, 5 do
+                        local m = current_party['p' .. i]
+                        if m and m.id == t.id then
+                            is_still_in_party = true
+                            break
+                        end
+                    end
+                end
+                
+                if is_still_in_party then
+                    local p = packets.new('outgoing', 0x0DD, {
+                        ['Target'] = t.id,
+                        ['Target Index'] = t.index,
+                        ['Check Type'] = 0,
+                    })
+                    packets.inject(p)
+                end
+                coroutine.sleep(2.0)
+            end
+        end, 1.0)
+    end
+end
+
 local function get_pc_count()
     local party = windower.ffxi.get_party()
     if not party then return 0 end
@@ -794,6 +880,7 @@ windower.register_event('addon command', function(command, ...)
             settings.relay_enabled = true
             settings:save()
             windower.add_to_chat(200, 'PartyManager: Relay output enabled.')
+            populate_initial_party_data()
             write_state_json('STATUS_SNAPSHOT', 'Relay output enabled.')
         elseif sub == 'off' then
             settings.relay_enabled = false
@@ -1240,6 +1327,34 @@ windower.register_event('incoming chunk', function(id, data)
             party_data[name].main_level = p['Main job level']
             party_data[name].main_job = p['Main job']
             pm_ui.update() -- Refresh UI with new data
+            -- log_packet('INCOMING 0x0DD from ' .. name .. ': ' .. dump_packet_fields(p))
+        end
+    end
+
+    -- Packet 0x0C9: Check response (contains subjob metadata)
+    if id == 0x0C9 then
+        local p = packets.parse('incoming', data)
+        if p then
+            -- log_packet('INCOMING 0x0C9 Target ID ' .. tostring(p['Target ID']) .. ': ' .. dump_packet_fields(p))
+            if p['Target ID'] then
+                local party = windower.ffxi.get_party()
+                if party then
+                    for i = 1, 5 do
+                        local m = party['p' .. i]
+                        if m and m.id == p['Target ID'] then
+                            local name = normalize(m.name)
+                            party_data[name] = party_data[name] or {}
+                            party_data[name].sub_job = p['Sub job'] or p['Sub Job']
+                            party_data[name].sub_level = p['Sub job level'] or p['Sub Job Level']
+                            party_data[name].master_level = p['Master Level'] or p['Master level'] or party_data[name].master_level
+                            party_data[name].main_level = p['Main job level'] or p['Main Job Level'] or party_data[name].main_level
+                            party_data[name].main_job = p['Main job'] or p['Main Job'] or party_data[name].main_job
+                            pm_ui.update()
+                            break
+                        end
+                    end
+                end
+            end
         end
     end
 
@@ -1637,6 +1752,14 @@ windower.register_event('prerender', function()
         last_action_time = now
         windower.add_to_chat(200, 'PartyManager: Process complete.')
     end
+end)
+
+-- Addon Load and Login Initialization
+log_packet('--- PartyManager Log Initialized ---')
+populate_initial_party_data()
+
+windower.register_event('login', function()
+    populate_initial_party_data()
 end)
 
 windower.register_event('unload', function()
