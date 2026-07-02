@@ -1755,7 +1755,7 @@ windower.register_event('prerender', function()
 end)
 
 -- Addon Load and Login Initialization
-log_packet('--- PartyManager Log Initialized ---')
+-- log_packet('--- PartyManager Log Initialized ---')
 populate_initial_party_data()
 
 windower.register_event('login', function()
