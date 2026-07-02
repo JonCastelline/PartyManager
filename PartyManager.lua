@@ -145,6 +145,92 @@ local function normalize(name)
     return name:lower():ucfirst()
 end
 
+local function log_packet(text)
+    local f = io.open(windower.addon_path .. 'packet_debug.log', 'a')
+    if f then
+        f:write(os.date('%Y-%m-%d %H:%M:%S') .. ' | ' .. text .. '\n')
+        f:close()
+    end
+end
+
+local function dump_packet_fields(p)
+    local fields = {}
+    for k, v in pairs(p) do
+        fields[#fields+1] = tostring(k) .. ': ' .. tostring(v)
+    end
+    table.sort(fields)
+    return table.concat(fields, ', ')
+end
+
+local function populate_initial_party_data()
+    local player = windower.ffxi.get_player()
+    if player then
+        local my_name = normalize(player.name)
+        party_data[my_name] = party_data[my_name] or {}
+        party_data[my_name].main_job = player.main_job_id
+        party_data[my_name].main_level = player.main_job_level
+        party_data[my_name].sub_job = player.sub_job_id
+        party_data[my_name].sub_level = player.sub_job_level
+        party_data[my_name].master_level = player.master_level or 0
+    end
+
+    local party = windower.ffxi.get_party()
+    if not party then return end
+
+    local targets_to_check = {}
+
+    for i = 1, 5 do
+        local m = party['p' .. i]
+        if m and m.name and m.name ~= '' then
+            if not m.mob or not m.mob.is_npc then
+                local name = normalize(m.name)
+                party_data[name] = party_data[name] or {}
+                if m.job then
+                    party_data[name].main_job = m.job
+                end
+                
+                if m.id and m.id ~= 0 then
+                    local mob = windower.ffxi.get_mob_by_id(m.id)
+                    local idx = mob and mob.index or 0
+                    targets_to_check[#targets_to_check + 1] = {id = m.id, index = idx}
+                end
+            end
+        end
+    end
+    pm_ui.update()
+
+    -- Trigger silent checks with a delay between each check to prevent packet spam
+    -- Only run packet query if relay output is enabled to avoid unnecessary server traffic
+    if settings.relay_enabled and #targets_to_check > 0 then
+        coroutine.schedule(function()
+            for _, t in ipairs(targets_to_check) do
+                -- Double check target is still in party
+                local current_party = windower.ffxi.get_party()
+                local is_still_in_party = false
+                if current_party then
+                    for i = 1, 5 do
+                        local m = current_party['p' .. i]
+                        if m and m.id == t.id then
+                            is_still_in_party = true
+                            break
+                        end
+                    end
+                end
+                
+                if is_still_in_party then
+                    local p = packets.new('outgoing', 0x0DD, {
+                        ['Target'] = t.id,
+                        ['Target Index'] = t.index,
+                        ['Check Type'] = 0,
+                    })
+                    packets.inject(p)
+                end
+                coroutine.sleep(2.0)
+            end
+        end, 1.0)
+    end
+end
+
 local function get_pc_count()
     local party = windower.ffxi.get_party()
     if not party then return 0 end
@@ -207,7 +293,18 @@ local function get_role_count(role_name)
     -- Check Self
     local player = windower.ffxi.get_player()
     if player then
-        local my_role = get_role_for_job(player.main_job_id)
+        local my_name = normalize(player.name)
+        local data = party_data[my_name]
+        local my_role = nil
+        if data and data.is_carry then
+            -- Carry does not count toward role coverage
+        else
+            if data and data.requested_role then
+                my_role = data.requested_role
+            else
+                my_role = get_role_for_job(player.main_job_id)
+            end
+        end
         if my_role == role_name then
             count = count + 1
         end
@@ -419,11 +516,25 @@ local function get_dynamic_trust_list(force_verbose, override_pc_roles, override
         -- Check Self
         local player = windower.ffxi.get_player()
         if player then
-            local role = get_role_for_job(player.main_job_id)
-            if verbose then
-                windower.add_to_chat(200, 'PartyManager: [DEBUG] PC: ' .. normalize(player.name) .. ' (Self) JobID: ' .. tostring(player.main_job_id) .. ' -> Role: ' .. (role or 'None'))
+            local my_name = normalize(player.name)
+            local data = party_data[my_name]
+            local role = nil
+            local source = 'get_player()'
+            
+            if data and data.is_carry then
+                if verbose then windower.add_to_chat(200, 'PartyManager: [DEBUG] PC: ' .. my_name .. ' (Self) (Carry) - Skipping role detection.') end
+            else
+                if data and data.requested_role then
+                    role = data.requested_role
+                    source = 'Override'
+                else
+                    role = get_role_for_job(player.main_job_id)
+                end
+                if verbose then
+                    windower.add_to_chat(200, 'PartyManager: [DEBUG] PC: ' .. my_name .. ' (Self) JobID: ' .. tostring(player.main_job_id) .. ' -> Role: ' .. (role or 'None') .. ' (Source: ' .. source .. ')')
+                end
+                if role then covered_roles[role] = true end
             end
-            if role then covered_roles[role] = true end
         end
 
         -- Check other PCs
@@ -556,7 +667,18 @@ local function validate_composition(new_player_role, is_carry)
     -- Add self
     local player = windower.ffxi.get_player()
     if player then
-        local self_role = get_role_for_job(player.main_job_id)
+        local my_name = normalize(player.name)
+        local data = party_data[my_name]
+        local self_role = nil
+        if data and data.is_carry then
+            -- Carry
+        else
+            if data and data.requested_role then
+                self_role = data.requested_role
+            else
+                self_role = get_role_for_job(player.main_job_id)
+            end
+        end
         if self_role then covered_by_pcs[self_role] = true end
     end
     
@@ -639,6 +761,8 @@ pm_ui.init(
     function() return windower.ffxi.get_party() end,
     party_data
 )
+
+local write_state_json
 
 ----------------------------------------------------------------------
 -- COMMAND HANDLER
@@ -756,6 +880,7 @@ windower.register_event('addon command', function(command, ...)
             settings.relay_enabled = true
             settings:save()
             windower.add_to_chat(200, 'PartyManager: Relay output enabled.')
+            populate_initial_party_data()
             write_state_json('STATUS_SNAPSHOT', 'Relay output enabled.')
         elseif sub == 'off' then
             settings.relay_enabled = false
@@ -894,6 +1019,87 @@ windower.register_event('addon command', function(command, ...)
             windower.add_to_chat(200, 'PartyManager: Dynamic trust settings reset to defaults.')
             pm_ui.update()
         end
+    elseif command == 'setrole' then
+        local target_name = args[1]
+        local player = windower.ffxi.get_player()
+        if target_name and target_name:lower() == 'self' and player then
+            target_name = player.name
+        end
+        local name = normalize(target_name)
+        local role = args[2] and args[2]:lower()
+        if not name then
+            windower.add_to_chat(200, 'PartyManager: Usage - //pm setrole <name|self> <dps|healer|support|carry|none>')
+            return
+        end
+        
+        -- Check if player is in party
+        local is_in_party = false
+        local party = windower.ffxi.get_party()
+        if party then
+            for i = 0, 5 do
+                local m = party['p' .. i]
+                if m and m.name and normalize(m.name) == name then
+                    is_in_party = true
+                    break
+                end
+            end
+        end
+        
+        if not is_in_party then
+            windower.add_to_chat(200, 'PartyManager: ' .. name .. ' is not in the party.')
+            return
+        end
+        
+        if not role then
+            windower.add_to_chat(200, 'PartyManager: Please specify a role: dps, healer, support, carry, none')
+            return
+        end
+        
+        party_data[name] = party_data[name] or {}
+        local role_changed = false
+        
+        if role == 'none' or role == 'clear' then
+            if party_data[name].is_carry or party_data[name].requested_role ~= nil then
+                party_data[name].is_carry = false
+                party_data[name].requested_role = nil
+                role_changed = true
+            end
+            windower.add_to_chat(200, 'PartyManager: Role override cleared for ' .. name .. '.')
+        elseif role == 'carry' then
+            if not party_data[name].is_carry or party_data[name].requested_role ~= nil then
+                party_data[name].is_carry = true
+                party_data[name].requested_role = nil
+                role_changed = true
+            end
+            windower.add_to_chat(200, 'PartyManager: Role for ' .. name .. ' set to CARRY.')
+        elseif role == 'dps' then
+            if party_data[name].is_carry or party_data[name].requested_role ~= 'DPS' then
+                party_data[name].is_carry = false
+                party_data[name].requested_role = 'DPS'
+                role_changed = true
+            end
+            windower.add_to_chat(200, 'PartyManager: Role for ' .. name .. ' set to DPS.')
+        elseif role == 'healer' then
+            if party_data[name].is_carry or party_data[name].requested_role ~= 'HEALER' then
+                party_data[name].is_carry = false
+                party_data[name].requested_role = 'HEALER'
+                role_changed = true
+            end
+            windower.add_to_chat(200, 'PartyManager: Role for ' .. name .. ' set to HEALER.')
+        elseif role == 'support' then
+            if party_data[name].is_carry or party_data[name].requested_role ~= 'SUPPORT' then
+                party_data[name].is_carry = false
+                party_data[name].requested_role = 'SUPPORT'
+                role_changed = true
+            end
+            windower.add_to_chat(200, 'PartyManager: Role for ' .. name .. ' set to SUPPORT.')
+        else
+            windower.add_to_chat(200, 'PartyManager: Invalid role. Use: dps, healer, support, carry, none')
+            return
+        end
+        
+        pm_ui.update()
+        write_state_json('STATUS_SNAPSHOT', 'Role updated.')
     elseif command == 'role' then
         local sub = args[1] and args[1]:lower()
         local trust = args[2]
@@ -1014,7 +1220,7 @@ local function to_json(val)
     end
 end
 
-local function write_state_json(event_type, event_msg)
+write_state_json = function(event_type, event_msg)
     if not settings.relay_enabled then return end
     local info = windower.ffxi.get_info()
     local zone_id = info and info.zone or 0
@@ -1024,6 +1230,50 @@ local function write_state_json(event_type, event_msg)
     local party_count = party and party.party1_count or 0
     local pc_count = get_pc_count()
     
+    local resolved_roles = {}
+    if party then
+        -- Self
+        local player = windower.ffxi.get_player()
+        if player then
+            local my_name = normalize(player.name)
+            local data = party_data[my_name]
+            local role = nil
+            if data and data.is_carry then
+                role = 'Carry'
+            elseif data and data.requested_role then
+                role = data.requested_role
+            else
+                role = get_role_for_job(player.main_job_id)
+            end
+            if role then
+                resolved_roles[my_name] = role
+            end
+        end
+        
+        -- Other PCs
+        for i = 1, 5 do
+            local m = party['p' .. i]
+            if m and m.name and m.name ~= '' and (not m.mob or not m.mob.is_npc) then
+                local name = normalize(m.name)
+                local data = party_data[name]
+                local role = nil
+                if data and data.is_carry then
+                    role = 'Carry'
+                elseif data and data.requested_role then
+                    role = data.requested_role
+                else
+                    role = get_role_for_job(m.job)
+                    if not role and data and data.main_job then
+                        role = get_role_for_job(data.main_job)
+                    end
+                end
+                if role then
+                    resolved_roles[name] = role
+                end
+            end
+        end
+    end
+
     local state_data = {
         last_updated = os.time(),
         zone = zone_name,
@@ -1032,6 +1282,7 @@ local function write_state_json(event_type, event_msg)
         sync_target = active_sync_target or settings.sync_target or '',
         party_count = party_count,
         last_pc_count = pc_count,
+        roles = resolved_roles,
     }
     
     if event_type then
@@ -1076,6 +1327,34 @@ windower.register_event('incoming chunk', function(id, data)
             party_data[name].main_level = p['Main job level']
             party_data[name].main_job = p['Main job']
             pm_ui.update() -- Refresh UI with new data
+            -- log_packet('INCOMING 0x0DD from ' .. name .. ': ' .. dump_packet_fields(p))
+        end
+    end
+
+    -- Packet 0x0C9: Check response (contains subjob metadata)
+    if id == 0x0C9 then
+        local p = packets.parse('incoming', data)
+        if p then
+            -- log_packet('INCOMING 0x0C9 Target ID ' .. tostring(p['Target ID']) .. ': ' .. dump_packet_fields(p))
+            if p['Target ID'] then
+                local party = windower.ffxi.get_party()
+                if party then
+                    for i = 1, 5 do
+                        local m = party['p' .. i]
+                        if m and m.id == p['Target ID'] then
+                            local name = normalize(m.name)
+                            party_data[name] = party_data[name] or {}
+                            party_data[name].sub_job = p['Sub job'] or p['Sub Job']
+                            party_data[name].sub_level = p['Sub job level'] or p['Sub Job Level']
+                            party_data[name].master_level = p['Master Level'] or p['Master level'] or party_data[name].master_level
+                            party_data[name].main_level = p['Main job level'] or p['Main Job Level'] or party_data[name].main_level
+                            party_data[name].main_job = p['Main job'] or p['Main Job'] or party_data[name].main_job
+                            pm_ui.update()
+                            break
+                        end
+                    end
+                end
+            end
         end
     end
 
@@ -1169,6 +1448,7 @@ windower.register_event('prerender', function()
     if settings.enabled then
         if current_pc_count < last_pc_count then
             write_state_json('MEMBER_LEFT', 'Player left the party.')
+            cleanup_party_data()
             if settings.auto_trust_resummon and current_state == states.IDLE then
                 windower.add_to_chat(200, 'PartyManager: Player left the party. Initiating reconfiguration.')
                 target_player = nil -- Ensure we know it's a resummon
@@ -1472,6 +1752,14 @@ windower.register_event('prerender', function()
         last_action_time = now
         windower.add_to_chat(200, 'PartyManager: Process complete.')
     end
+end)
+
+-- Addon Load and Login Initialization
+-- log_packet('--- PartyManager Log Initialized ---')
+populate_initial_party_data()
+
+windower.register_event('login', function()
+    populate_initial_party_data()
 end)
 
 windower.register_event('unload', function()
