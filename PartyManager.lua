@@ -207,7 +207,18 @@ local function get_role_count(role_name)
     -- Check Self
     local player = windower.ffxi.get_player()
     if player then
-        local my_role = get_role_for_job(player.main_job_id)
+        local my_name = normalize(player.name)
+        local data = party_data[my_name]
+        local my_role = nil
+        if data and data.is_carry then
+            -- Carry does not count toward role coverage
+        else
+            if data and data.requested_role then
+                my_role = data.requested_role
+            else
+                my_role = get_role_for_job(player.main_job_id)
+            end
+        end
         if my_role == role_name then
             count = count + 1
         end
@@ -419,11 +430,25 @@ local function get_dynamic_trust_list(force_verbose, override_pc_roles, override
         -- Check Self
         local player = windower.ffxi.get_player()
         if player then
-            local role = get_role_for_job(player.main_job_id)
-            if verbose then
-                windower.add_to_chat(200, 'PartyManager: [DEBUG] PC: ' .. normalize(player.name) .. ' (Self) JobID: ' .. tostring(player.main_job_id) .. ' -> Role: ' .. (role or 'None'))
+            local my_name = normalize(player.name)
+            local data = party_data[my_name]
+            local role = nil
+            local source = 'get_player()'
+            
+            if data and data.is_carry then
+                if verbose then windower.add_to_chat(200, 'PartyManager: [DEBUG] PC: ' .. my_name .. ' (Self) (Carry) - Skipping role detection.') end
+            else
+                if data and data.requested_role then
+                    role = data.requested_role
+                    source = 'Override'
+                else
+                    role = get_role_for_job(player.main_job_id)
+                end
+                if verbose then
+                    windower.add_to_chat(200, 'PartyManager: [DEBUG] PC: ' .. my_name .. ' (Self) JobID: ' .. tostring(player.main_job_id) .. ' -> Role: ' .. (role or 'None') .. ' (Source: ' .. source .. ')')
+                end
+                if role then covered_roles[role] = true end
             end
-            if role then covered_roles[role] = true end
         end
 
         -- Check other PCs
@@ -556,7 +581,18 @@ local function validate_composition(new_player_role, is_carry)
     -- Add self
     local player = windower.ffxi.get_player()
     if player then
-        local self_role = get_role_for_job(player.main_job_id)
+        local my_name = normalize(player.name)
+        local data = party_data[my_name]
+        local self_role = nil
+        if data and data.is_carry then
+            -- Carry
+        else
+            if data and data.requested_role then
+                self_role = data.requested_role
+            else
+                self_role = get_role_for_job(player.main_job_id)
+            end
+        end
         if self_role then covered_by_pcs[self_role] = true end
     end
     
@@ -896,6 +932,86 @@ windower.register_event('addon command', function(command, ...)
             windower.add_to_chat(200, 'PartyManager: Dynamic trust settings reset to defaults.')
             pm_ui.update()
         end
+    elseif command == 'setrole' then
+        local target_name = args[1]
+        local player = windower.ffxi.get_player()
+        if target_name and target_name:lower() == 'self' and player then
+            target_name = player.name
+        end
+        local name = normalize(target_name)
+        local role = args[2] and args[2]:lower()
+        if not name then
+            windower.add_to_chat(200, 'PartyManager: Usage - //pm setrole <name|self> <dps|healer|support|carry|none>')
+            return
+        end
+        
+        -- Check if player is in party
+        local is_in_party = false
+        local party = windower.ffxi.get_party()
+        if party then
+            for i = 0, 5 do
+                local m = party['p' .. i]
+                if m and m.name and normalize(m.name) == name then
+                    is_in_party = true
+                    break
+                end
+            end
+        end
+        
+        if not is_in_party then
+            windower.add_to_chat(200, 'PartyManager: ' .. name .. ' is not in the party.')
+            return
+        end
+        
+        if not role then
+            windower.add_to_chat(200, 'PartyManager: Please specify a role: dps, healer, support, carry, none')
+            return
+        end
+        
+        party_data[name] = party_data[name] or {}
+        local role_changed = false
+        
+        if role == 'none' or role == 'clear' then
+            if party_data[name].is_carry or party_data[name].requested_role ~= nil then
+                party_data[name].is_carry = false
+                party_data[name].requested_role = nil
+                role_changed = true
+            end
+            windower.add_to_chat(200, 'PartyManager: Role override cleared for ' .. name .. '.')
+        elseif role == 'carry' then
+            if not party_data[name].is_carry or party_data[name].requested_role ~= nil then
+                party_data[name].is_carry = true
+                party_data[name].requested_role = nil
+                role_changed = true
+            end
+            windower.add_to_chat(200, 'PartyManager: Role for ' .. name .. ' set to CARRY.')
+        elseif role == 'dps' then
+            if party_data[name].is_carry or party_data[name].requested_role ~= 'DPS' then
+                party_data[name].is_carry = false
+                party_data[name].requested_role = 'DPS'
+                role_changed = true
+            end
+            windower.add_to_chat(200, 'PartyManager: Role for ' .. name .. ' set to DPS.')
+        elseif role == 'healer' then
+            if party_data[name].is_carry or party_data[name].requested_role ~= 'HEALER' then
+                party_data[name].is_carry = false
+                party_data[name].requested_role = 'HEALER'
+                role_changed = true
+            end
+            windower.add_to_chat(200, 'PartyManager: Role for ' .. name .. ' set to HEALER.')
+        elseif role == 'support' then
+            if party_data[name].is_carry or party_data[name].requested_role ~= 'SUPPORT' then
+                party_data[name].is_carry = false
+                party_data[name].requested_role = 'SUPPORT'
+                role_changed = true
+            end
+            windower.add_to_chat(200, 'PartyManager: Role for ' .. name .. ' set to SUPPORT.')
+        else
+            windower.add_to_chat(200, 'PartyManager: Invalid role. Use: dps, healer, support, carry, none')
+            return
+        end
+        
+        pm_ui.update()
     elseif command == 'role' then
         local sub = args[1] and args[1]:lower()
         local trust = args[2]
@@ -1171,6 +1287,7 @@ windower.register_event('prerender', function()
     if settings.enabled then
         if current_pc_count < last_pc_count then
             write_state_json('MEMBER_LEFT', 'Player left the party.')
+            cleanup_party_data()
             if settings.auto_trust_resummon and current_state == states.IDLE then
                 windower.add_to_chat(200, 'PartyManager: Player left the party. Initiating reconfiguration.')
                 target_player = nil -- Ensure we know it's a resummon

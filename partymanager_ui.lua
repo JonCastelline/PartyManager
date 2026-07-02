@@ -138,6 +138,7 @@ end
 
 local txt_labels = {}
 local txt_header = nil
+local txt_picker_title = nil
 
 ---------------------------------------------------------------------------
 -- Helpers
@@ -201,6 +202,9 @@ local function build_once()
     txt_header = new_txt()
     txt_header:show()
 
+    txt_picker_title = new_txt()
+    txt_picker_title:hide()
+
     for _, key in ipairs(BTN_KEYS) do
         txt_labels[key] = new_txt(key:sub(1, 5) == 'pick_' and 9 or UI.font_size)
     end
@@ -244,10 +248,14 @@ end
 ---------------------------------------------------------------------------
 -- Show / hide info rows (supports custom height)
 ---------------------------------------------------------------------------
-local function show_info_h(key, iy, h, label, lcolor)
+local function show_info_h(key, iy, h, label, lcolor, hovered)
     local w = fw(); local bx = px + UI.padding
-    set_prim(info_borders[key], bx - 1, iy - 1, w + 2, h + 2, {0, 0, 0, 150})
-    set_prim(info_prims[key], bx, iy, w, h, UI.info_bg)
+    local bg = UI.info_bg
+    if hovered then
+        bg = {math.min(255, bg[1] + HOVER_BOOST), math.min(255, bg[2] + HOVER_BOOST), math.min(255, bg[3] + HOVER_BOOST), bg[4]}
+    end
+    set_prim(info_borders[key], bx - 1, iy - 1, w + 2, h + 2, hovered and UI.on_color or {0, 0, 0, 150})
+    set_prim(info_prims[key], bx, iy, w, h, bg)
     set_vis(info_prims[key], true); set_vis(info_borders[key], true)
     info_txts[key]:text(label); info_txts[key]:pos(bx + 6, iy + 1)
     info_txts[key]:color(rgba(lcolor)); info_txts[key]:show()
@@ -439,6 +447,39 @@ local function build_priority_data()
     return items
 end
 
+local function build_member_role_data(name)
+    local items = {}
+    local data = ref_party_data and ref_party_data[name]
+    local cur_role = 'none'
+    if data then
+        if data.is_carry then
+            cur_role = 'carry'
+        elseif data.requested_role then
+            cur_role = data.requested_role:lower()
+        end
+    end
+    
+    local roles = {'dps', 'healer', 'support', 'carry', 'none'}
+    local displays = {
+        dps = 'DPS',
+        healer = 'HEALER',
+        support = 'SUPPORT',
+        carry = 'CARRY (No role coverage)',
+        none = 'None (Use natural job role)'
+    }
+    
+    for _, r in ipairs(roles) do
+        items[#items+1] = {
+            type = 'select_role',
+            name = displays[r],
+            role_val = r,
+            is_current = (r == cur_role),
+            info = (r == cur_role) and 'current' or ''
+        }
+    end
+    return items
+end
+
 ---------------------------------------------------------------------------
 -- Refresh picker data
 ---------------------------------------------------------------------------
@@ -455,6 +496,9 @@ local function refresh_picker_data()
         if pc then
             picker_data = build_trust_data(pc)
         end
+    elseif picker_type and picker_type:sub(1, 12) == 'member_role_' then
+        local name = picker_type:sub(13)
+        picker_data = build_member_role_data(name)
     end
 end
 
@@ -491,7 +535,8 @@ local function compute_rects()
 
         -- Party slots (6 fixed rows, smaller height)
         for i = 0, 5 do
-            r['_info_p' .. i] = cur_y; cur_y = cur_y + UI.party_row_h + 1
+            r['info_p' .. i] = {x = bx, y = cur_y, w = w, h = UI.party_row_h}
+            cur_y = cur_y + UI.party_row_h + 1
         end
         cur_y = cur_y + UI.gap
 
@@ -648,7 +693,7 @@ local function apply_layout()
         for i = 0, 5 do
             local slot = slots[i]
             local skey = 'info_p' .. i
-            local sy = rects['_info_p' .. i]
+            local rc = rects[skey]
             if slot.name then
                 local prefix = (i == 0) and 'P0' or ('P' .. i)
                 local suffix = slot.is_trust and ' (Trust)' or ''
@@ -669,9 +714,10 @@ local function apply_layout()
                 
                 local label = ('%s: %s%s%s%s'):format(prefix, slot.name, suffix, ml_str, role_str)
                 local color = slot.is_trust and UI.trust_color or UI.party_color
-                show_info_h(skey, sy, UI.party_row_h, label, color)
+                local hovered = not slot.is_trust and hovering[skey] or false
+                show_info_h(skey, rc.y, rc.h, label, color, hovered)
             else
-                show_info_h(skey, sy, UI.party_row_h, ('P%d: ---'):format(i), UI.empty_color)
+                show_info_h(skey, rc.y, rc.h, ('P%d: ---'):format(i), UI.empty_color, false)
             end
         end
 
@@ -818,6 +864,7 @@ local function apply_layout()
                 show_btn(key, nil)
             end
         end
+        if txt_picker_title then txt_picker_title:hide() end
         set_vis(prims.picker_bg, false); set_vis(prims.picker_border, false)
         show_btn('picker_close', nil); show_btn('picker_prev', nil); show_btn('picker_next', nil)
         for s = 0, 9 do 
@@ -841,6 +888,23 @@ local function apply_layout()
         set_prim(prims.picker_border, ppx_v - 1, ppy_v - 1, UI.picker_width + 2, ph + 2, UI.picker_border)
         set_prim(prims.picker_bg, ppx_v, ppy_v, UI.picker_width, ph, UI.picker_bg)
         set_vis(prims.picker_bg, true); set_vis(prims.picker_border, true)
+
+        local p_title = 'Options'
+        if picker_type == 'puller' then
+            p_title = 'Select Puller'
+        elseif picker_type == 'whitelist' then
+            p_title = 'Manage Whitelist'
+        elseif picker_type == 'priority' then
+            p_title = 'Manage Priorities'
+        elseif picker_type and picker_type:sub(1, 7) == 'trust_p' then
+            p_title = 'Manage Trusts (' .. picker_type:sub(8) .. ' PCs)'
+        elseif picker_type and picker_type:sub(1, 12) == 'member_role_' then
+            p_title = 'Select Role for ' .. picker_type:sub(13)
+        end
+        txt_picker_title:pos(ppx_v + UI.padding, ppy_v + UI.padding)
+        txt_picker_title:text(p_title)
+        txt_picker_title:color(rgba(UI.title_color))
+        txt_picker_title:show()
 
         show_btn('picker_close', prects['picker_close'], UI.picker_close_c, '[X]', UI.text_color)
 
@@ -874,7 +938,7 @@ local function apply_layout()
                     local bg, label, lcolor
                     local info_str = item.info and item.info ~= '' and ('  [%s]'):format(item.info) or ''
 
-                    if item.type == 'select' then
+                    if item.type == 'select' or item.type == 'select_role' then
                         local marker = item.is_current and '>> ' or '   '
                         label = marker .. item.name .. info_str
                         bg = item.is_current and UI.btn_picker_sel or UI.btn_picker_bg
@@ -909,6 +973,7 @@ local function apply_layout()
         show_btn('picker_next', prects['picker_next'], UI.picker_nav,
             picker_page < total_pages and ('Next >   %s'):format(page_str) or page_str, UI.muted_color)
     else
+        if txt_picker_title then txt_picker_title:hide() end
         set_vis(prims.picker_bg, false); set_vis(prims.picker_border, false)
         show_btn('picker_close', nil)
         show_btn('picker_prev', nil); show_btn('picker_next', nil)
@@ -1016,6 +1081,18 @@ local function handle_click(key)
         if picker_open and picker_type == ptype then close_picker()
         else open_picker(ptype) end
 
+    elseif key:sub(1, 6) == 'info_p' then
+        local slot_idx = tonumber(key:sub(7))
+        if slot_idx then
+            local slots = get_party_slots()
+            local slot = slots[slot_idx]
+            if slot and slot.name and not slot.is_trust then
+                local ptype = 'member_role_' .. slot.name
+                if picker_open and picker_type == ptype then close_picker()
+                else open_picker(ptype) end
+            end
+        end
+
     elseif key == 'auto_sync' then
         if ref_settings then
             ref_settings.auto_level_sync = not (ref_settings.auto_level_sync or false)
@@ -1079,8 +1156,15 @@ local function handle_click(key)
         local item = picker_data[idx]
         if not item then return end
 
+        -- === MEMBER ROLE PICKER ===
+        if picker_type and picker_type:sub(1, 12) == 'member_role_' then
+            local name = picker_type:sub(13)
+            if item.type == 'select_role' then
+                safe_send('pm setrole ' .. name .. ' ' .. item.role_val)
+                close_picker()
+            end
         -- === PRIORITY PICKER ===
-        if picker_type == 'priority' then
+        elseif picker_type == 'priority' then
             if action == 'up' then
                 if idx > 1 then
                     local t = ref_settings.trust_priority
@@ -1216,6 +1300,23 @@ windower.register_event('mouse', function(mtype, x, y, delta, blocked)
                 if over then over_any = true end
             end
         end
+        if expanded and main_rects then
+            local slots = get_party_slots()
+            for i = 0, 5 do
+                local skey = 'info_p' .. i
+                local rc = main_rects[skey]
+                if rc and rc.w then
+                    local slot = slots[i]
+                    local is_clickable = slot and slot.name and not slot.is_trust
+                    local over = is_clickable and hit(x, y, rc.x, rc.y, rc.w, rc.h) or false
+                    if hovering[skey] ~= over then
+                        hovering[skey] = over
+                        needs_refresh = true
+                    end
+                    if over then over_any = true end
+                end
+            end
+        end
         if hit(x, y, hdr.x, hdr.y, hdr.w, hdr.h) then over_any = true end
         if hit(x, y, px, py, UI.width, panel_h) then over_any = true end
         if picker_open and prects._ppx then
@@ -1228,6 +1329,19 @@ windower.register_event('mouse', function(mtype, x, y, delta, blocked)
         for _, key in ipairs(BTN_KEYS) do
             local rc = all[key]
             if rc and rc.w and hit(x, y, rc.x, rc.y, rc.w, rc.h) then return true end
+        end
+        if expanded and main_rects then
+            for i = 0, 5 do
+                local skey = 'info_p' .. i
+                local rc = main_rects[skey]
+                if rc and rc.w and hit(x, y, rc.x, rc.y, rc.w, rc.h) then
+                    local slots = get_party_slots()
+                    local slot = slots[i]
+                    if slot and slot.name and not slot.is_trust then
+                        return true
+                    end
+                end
+            end
         end
         if hit(x, y, hdr.x, hdr.y, hdr.w, hdr.h) then
             dragging = true; drag_dx = x - px; drag_dy = y - py; return true
@@ -1247,6 +1361,19 @@ windower.register_event('mouse', function(mtype, x, y, delta, blocked)
                 handle_click(key); return true
             end
         end
+        if expanded and main_rects then
+            for i = 0, 5 do
+                local skey = 'info_p' .. i
+                local rc = main_rects[skey]
+                if rc and rc.w and hit(x, y, rc.x, rc.y, rc.w, rc.h) then
+                    local slots = get_party_slots()
+                    local slot = slots[i]
+                    if slot and slot.name and not slot.is_trust then
+                        handle_click(skey); return true
+                    end
+                end
+            end
+        end
         if hit(x, y, px, py, UI.width, panel_h) then return true end
         if picker_open and prects._ppx then
             if hit(x, y, prects._ppx, prects._ppy, UI.picker_width, prects._bottom - prects._ppy) then return true end
@@ -1264,6 +1391,7 @@ end)
 local function destroy_all()
     pcall(function()
         if txt_header then txt_header:hide() end
+        if txt_picker_title then txt_picker_title:hide() end
         for _, t in pairs(txt_labels) do t:hide() end
         for _, t in pairs(info_txts) do t:hide() end
         windower.prim.delete(prims.panel_bg)
@@ -1337,6 +1465,7 @@ function M.hide()
         set_vis(prims.picker_bg, false)
         set_vis(prims.picker_border, false)
         if txt_header then txt_header:hide() end
+        if txt_picker_title then txt_picker_title:hide() end
         for _, key in ipairs(BTN_KEYS) do show_btn(key, nil) end
         for _, key in ipairs(INFO_KEYS) do hide_info(key) end
     end
