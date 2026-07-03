@@ -167,13 +167,19 @@ local function populate_initial_party_data()
     if player then
         local my_name = normalize(player.name)
         party_data[my_name] = party_data[my_name] or {}
-        party_data[my_name].main_job = player.main_job_id
+        
+        local old_job = party_data[my_name].main_job
+        local new_job = player.main_job_id
+        local job_changed = (old_job ~= nil and old_job ~= new_job)
+        
+        party_data[my_name].main_job = new_job
         party_data[my_name].main_level = player.main_job_level
         party_data[my_name].sub_job = player.sub_job_id
         party_data[my_name].sub_level = player.sub_job_level
+        
         local my_ml = player.master_level or 0
         local cached_my_ml = party_data[my_name].master_level or 0
-        if my_ml > cached_my_ml then
+        if job_changed or party_data[my_name].master_level == nil or my_ml > cached_my_ml then
             party_data[my_name].master_level = my_ml
         end
     end
@@ -190,7 +196,13 @@ local function populate_initial_party_data()
                 local name = normalize(m.name)
                 party_data[name] = party_data[name] or {}
                 if m.job then
-                    party_data[name].main_job = m.job
+                    local old_job = party_data[name].main_job
+                    if old_job ~= m.job then
+                        if old_job ~= nil then
+                            party_data[name].master_level = nil
+                        end
+                        party_data[name].main_job = m.job
+                    end
                 end
                 
                 if m.id and m.id ~= 0 then
@@ -1327,13 +1339,18 @@ windower.register_event('incoming chunk', function(id, data)
         if p and p.Name then
             local name = normalize(p.Name)
             party_data[name] = party_data[name] or {}
+            
+            local old_job = party_data[name].main_job
+            local new_job = p['Main job']
+            local job_changed = (old_job ~= nil and new_job ~= nil and old_job ~= new_job)
+            
             local new_ml = p['Master Level'] or 0
             local cached_ml = party_data[name].master_level or 0
-            if new_ml > cached_ml then
+            if job_changed or party_data[name].master_level == nil or new_ml > cached_ml then
                 party_data[name].master_level = new_ml
             end
             party_data[name].main_level = p['Main job level']
-            party_data[name].main_job = p['Main job']
+            party_data[name].main_job = new_job
             pm_ui.update() -- Refresh UI with new data
             -- log_packet('INCOMING 0x0DD from ' .. name .. ': ' .. dump_packet_fields(p))
         end
@@ -1354,13 +1371,18 @@ windower.register_event('incoming chunk', function(id, data)
                             party_data[name] = party_data[name] or {}
                             party_data[name].sub_job = p['Sub job'] or p['Sub Job']
                             party_data[name].sub_level = p['Sub job level'] or p['Sub Job Level']
+                            
+                            local old_job = party_data[name].main_job
+                            local new_job = p['Main job'] or p['Main Job']
+                            local job_changed = (old_job ~= nil and new_job ~= nil and old_job ~= new_job)
+                            
                             local new_ml = p['Master Level'] or p['Master level'] or 0
                             local cached_ml = party_data[name].master_level or 0
-                            if new_ml > cached_ml then
+                            if job_changed or party_data[name].master_level == nil or new_ml > cached_ml then
                                 party_data[name].master_level = new_ml
                             end
                             party_data[name].main_level = p['Main job level'] or p['Main Job Level'] or party_data[name].main_level
-                            party_data[name].main_job = p['Main job'] or p['Main Job'] or party_data[name].main_job
+                            party_data[name].main_job = new_job or party_data[name].main_job
                             pm_ui.update()
                             break
                         end
