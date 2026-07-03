@@ -1333,8 +1333,42 @@ end
 ----------------------------------------------------------------------
 
 windower.register_event('incoming chunk', function(id, data)
+    -- Packet 0x00D: PC Update (contains another player's DC status)
+    if id == 0x00D then
+        local p = packets.parse('incoming', data)
+        if p and p['Player'] then
+            local mob = windower.ffxi.get_mob_by_id(p['Player'])
+            if mob and mob.name then
+                local name = normalize(mob.name)
+                party_data[name] = party_data[name] or {}
+                
+                local is_dc = (bit.band(data:byte(35), 0x04) ~= 0)
+                local old_dc = party_data[name].disconnected or false
+                if old_dc ~= is_dc then
+                    party_data[name].disconnected = is_dc
+                    pm_ui.update()
+                end
+            end
+        end
+    -- Packet 0x037: Player Update (contains local player's DC status)
+    elseif id == 0x037 then
+        local p = packets.parse('incoming', data)
+        if p and p['Player'] then
+            local player = windower.ffxi.get_player()
+            if player and p['Player'] == player.id then
+                local my_name = normalize(player.name)
+                party_data[my_name] = party_data[my_name] or {}
+                
+                local is_dc = (bit.band(data:byte(44), 0x04) ~= 0)
+                local old_dc = party_data[my_name].disconnected or false
+                if old_dc ~= is_dc then
+                    party_data[my_name].disconnected = is_dc
+                    pm_ui.update()
+                end
+            end
+        end
     -- Packet 0x0DD: Party Member Update (contains Master Level)
-    if id == 0x0DD then
+    elseif id == 0x0DD then
         local p = packets.parse('incoming', data)
         if p and p.Name then
             local name = normalize(p.Name)
@@ -1481,10 +1515,30 @@ windower.register_event('prerender', function()
     -- Background monitoring for PC departures
     if settings.enabled then
         if current_pc_count < last_pc_count then
-            write_state_json('MEMBER_LEFT', 'Player left the party.')
+            -- Find who left the party
+            local party = windower.ffxi.get_party()
+            local current_members = {}
+            if party then
+                for i = 0, 5 do
+                    local m = party['p' .. i]
+                    if m and m.name and m.name ~= '' then
+                        current_members[normalize(m.name)] = true
+                    end
+                end
+            end
+            
+            local left_name = "Player"
+            for name, _ in pairs(party_data) do
+                if not current_members[name] then
+                    left_name = name
+                    break
+                end
+            end
+            
+            write_state_json('MEMBER_LEFT', left_name .. ' left the party.')
             cleanup_party_data()
             if settings.auto_trust_resummon and current_state == states.IDLE then
-                windower.add_to_chat(200, 'PartyManager: Player left the party. Initiating reconfiguration.')
+                windower.add_to_chat(200, 'PartyManager: ' .. left_name .. ' left the party. Initiating reconfiguration.')
                 target_player = nil -- Ensure we know it's a resummon
                 
                 -- Check if we need to force sync (target left)

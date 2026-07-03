@@ -710,6 +710,9 @@ local function apply_layout()
                     elseif ref_party_data[slot.name].requested_role then
                         role_str = " (" .. ref_party_data[slot.name].requested_role .. ")"
                     end
+                    if ref_party_data[slot.name].disconnected then
+                        role_str = role_str .. " (DC)"
+                    end
                 end
                 
                 local label = ('%s: %s%s%s%s'):format(prefix, slot.name, suffix, ml_str, role_str)
