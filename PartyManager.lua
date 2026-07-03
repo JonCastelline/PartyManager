@@ -1714,7 +1714,7 @@ windower.register_event('prerender', function()
                 sync_off_time = os.time()
                 last_msg_time = 0
                 last_action_time = now
-                write_state_json('SYNC_CLEARED', 'Deactivating Level Sync.')
+                write_state_json('STATUS_SNAPSHOT', 'Deactivating Level Sync.')
             end
         else
             windower.add_to_chat(200, 'PartyManager: Sync mode set to none or no valid target found. Skipping sync.')
@@ -1755,7 +1755,7 @@ windower.register_event('prerender', function()
                 windower.add_to_chat(200, 'PartyManager: Injecting Level Sync packet (0x077) for ' .. sync_target_name .. '.')
                 send_level_sync_packet(sync_target_name, 0x06)
                 active_sync_target = normalize(sync_target_name)
-                write_state_json('SYNC_REQUESTED', 'Level sync requested for ' .. sync_target_name)
+                write_state_json('STATUS_SNAPSHOT', 'Level sync requested for ' .. sync_target_name)
                 -- Syncing resets the trust cooldown timer!
                 invite_time = os.time()
                 current_state = states.SUMMONING_TRUSTS
@@ -1785,7 +1785,7 @@ windower.register_event('prerender', function()
             windower.add_to_chat(200, 'PartyManager: There is a 2 minute cooldown for Trusts after party changes. Starting timer.')
             trust_summon_initial = false
             last_msg_time = now
-            write_state_json('TRUST_SUMMON_STARTED', 'Started summoning trusts.')
+            write_state_json('STATUS_SNAPSHOT', 'Started summoning trusts.')
         end
         local elapsed = os.time() - invite_time
         if elapsed < 120 then
@@ -1828,7 +1828,7 @@ windower.register_event('prerender', function()
             current_state = states.STARTING_PULLER
             trust_summon_initial = true
             last_action_time = now
-            write_state_json('TRUST_SUMMON_COMPLETE', 'Trust summoning complete.')
+            write_state_json('STATUS_SNAPSHOT', 'Trust summoning complete.')
         end
 
     elseif current_state == states.STARTING_PULLER then
@@ -1839,6 +1839,7 @@ windower.register_event('prerender', function()
         active_sync_target = nil
         last_action_time = now
         windower.add_to_chat(200, 'PartyManager: Process complete.')
+        write_state_json('PARTY_RESUMED', 'Party manager process complete. Puller started, party resumed.')
     end
 end)
 
