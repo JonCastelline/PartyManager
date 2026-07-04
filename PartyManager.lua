@@ -145,6 +145,19 @@ local function normalize(name)
     return name:lower():ucfirst()
 end
 
+local function is_party_member(name)
+    local party = windower.ffxi.get_party()
+    if not party then return false end
+    local name_norm = normalize(name)
+    for i = 0, 5 do
+        local m = party['p' .. i]
+        if m and m.name and normalize(m.name) == name_norm then
+            return true
+        end
+    end
+    return false
+end
+
 local function log_packet(text)
     local f = io.open(windower.addon_path .. 'packet_debug.log', 'a')
     if f then
@@ -1340,13 +1353,15 @@ windower.register_event('incoming chunk', function(id, data)
             local mob = windower.ffxi.get_mob_by_id(p['Player'])
             if mob and mob.name then
                 local name = normalize(mob.name)
-                party_data[name] = party_data[name] or {}
-                
-                local is_dc = (bit.band(data:byte(35), 0x04) ~= 0)
-                local old_dc = party_data[name].disconnected or false
-                if old_dc ~= is_dc then
-                    party_data[name].disconnected = is_dc
-                    pm_ui.update()
+                if is_party_member(name) then
+                    party_data[name] = party_data[name] or {}
+                    
+                    local is_dc = (bit.band(data:byte(35), 0x04) ~= 0)
+                    local old_dc = party_data[name].disconnected or false
+                    if old_dc ~= is_dc then
+                        party_data[name].disconnected = is_dc
+                        pm_ui.update()
+                    end
                 end
             end
         end
