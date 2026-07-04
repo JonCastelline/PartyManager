@@ -1510,26 +1510,25 @@ windower.register_event('prerender', function()
     if now - last_json_write_time >= 10 then
         write_state_json('STATUS_SNAPSHOT', 'Status snapshot.')
     end
-    local current_pc_count = get_pc_count()
+    local party = windower.ffxi.get_party()
+    local player = windower.ffxi.get_player()
     
     -- Background monitoring for PC departures
-    if settings.enabled then
+    if settings.enabled and party and player then
+        local current_pc_count = get_pc_count()
         if current_pc_count < last_pc_count then
-            -- Find who left the party
-            local party = windower.ffxi.get_party()
             local current_members = {}
-            if party then
-                for i = 0, 5 do
-                    local m = party['p' .. i]
-                    if m and m.name and m.name ~= '' then
-                        current_members[normalize(m.name)] = true
-                    end
+            for i = 0, 5 do
+                local m = party['p' .. i]
+                if m and m.name and m.name ~= '' then
+                    current_members[normalize(m.name)] = true
                 end
             end
             
             local left_name = "Player"
+            local my_name = normalize(player.name)
             for name, _ in pairs(party_data) do
-                if not current_members[name] then
+                if name ~= my_name and not current_members[name] then
                     left_name = name
                     break
                 end
