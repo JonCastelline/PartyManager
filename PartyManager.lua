@@ -141,8 +141,9 @@ local function clean(s)
 end
 
 local function normalize(name)
-    if not name or name == '' then return nil end
-    return name:lower():ucfirst()
+    local cleaned = clean(name)
+    if not cleaned or cleaned == '' then return nil end
+    return cleaned:lower():ucfirst()
 end
 
 local function is_party_member(name)
@@ -1353,7 +1354,7 @@ windower.register_event('incoming chunk', function(id, data)
             local mob = windower.ffxi.get_mob_by_id(p['Player'])
             if mob and mob.name then
                 local name = normalize(mob.name)
-                if is_party_member(name) then
+                if name and is_party_member(name) then
                     party_data[name] = party_data[name] or {}
                     
                     local is_dc = (bit.band(data:byte(35), 0x04) ~= 0)
@@ -1372,13 +1373,15 @@ windower.register_event('incoming chunk', function(id, data)
             local player = windower.ffxi.get_player()
             if player and p['Player'] == player.id then
                 local my_name = normalize(player.name)
-                party_data[my_name] = party_data[my_name] or {}
-                
-                local is_dc = (bit.band(data:byte(44), 0x04) ~= 0)
-                local old_dc = party_data[my_name].disconnected or false
-                if old_dc ~= is_dc then
-                    party_data[my_name].disconnected = is_dc
-                    pm_ui.update()
+                if my_name then
+                    party_data[my_name] = party_data[my_name] or {}
+                    
+                    local is_dc = (bit.band(data:byte(44), 0x04) ~= 0)
+                    local old_dc = party_data[my_name].disconnected or false
+                    if old_dc ~= is_dc then
+                        party_data[my_name].disconnected = is_dc
+                        pm_ui.update()
+                    end
                 end
             end
         end
@@ -1387,21 +1390,23 @@ windower.register_event('incoming chunk', function(id, data)
         local p = packets.parse('incoming', data)
         if p and p.Name then
             local name = normalize(p.Name)
-            party_data[name] = party_data[name] or {}
-            
-            local old_job = party_data[name].main_job
-            local new_job = p['Main job']
-            local job_changed = (old_job ~= nil and new_job ~= nil and old_job ~= new_job)
-            
-            local new_ml = p['Master Level'] or 0
-            local cached_ml = party_data[name].master_level or 0
-            if job_changed or party_data[name].master_level == nil or new_ml > cached_ml then
-                party_data[name].master_level = new_ml
+            if name then
+                party_data[name] = party_data[name] or {}
+                
+                local old_job = party_data[name].main_job
+                local new_job = p['Main job']
+                local job_changed = (old_job ~= nil and new_job ~= nil and old_job ~= new_job)
+                
+                local new_ml = p['Master Level'] or 0
+                local cached_ml = party_data[name].master_level or 0
+                if job_changed or party_data[name].master_level == nil or new_ml > cached_ml then
+                    party_data[name].master_level = new_ml
+                end
+                party_data[name].main_level = p['Main job level']
+                party_data[name].main_job = new_job
+                pm_ui.update() -- Refresh UI with new data
+                -- log_packet('INCOMING 0x0DD from ' .. name .. ': ' .. dump_packet_fields(p))
             end
-            party_data[name].main_level = p['Main job level']
-            party_data[name].main_job = new_job
-            pm_ui.update() -- Refresh UI with new data
-            -- log_packet('INCOMING 0x0DD from ' .. name .. ': ' .. dump_packet_fields(p))
         end
     end
 
@@ -1417,23 +1422,25 @@ windower.register_event('incoming chunk', function(id, data)
                         local m = party['p' .. i]
                         if m and m.id == p['Target ID'] then
                             local name = normalize(m.name)
-                            party_data[name] = party_data[name] or {}
-                            party_data[name].sub_job = p['Sub job'] or p['Sub Job']
-                            party_data[name].sub_level = p['Sub job level'] or p['Sub Job Level']
-                            
-                            local old_job = party_data[name].main_job
-                            local new_job = p['Main job'] or p['Main Job']
-                            local job_changed = (old_job ~= nil and new_job ~= nil and old_job ~= new_job)
-                            
-                            local new_ml = p['Master Level'] or p['Master level'] or 0
-                            local cached_ml = party_data[name].master_level or 0
-                            if job_changed or party_data[name].master_level == nil or new_ml > cached_ml then
-                                party_data[name].master_level = new_ml
+                            if name then
+                                party_data[name] = party_data[name] or {}
+                                party_data[name].sub_job = p['Sub job'] or p['Sub Job']
+                                party_data[name].sub_level = p['Sub job level'] or p['Sub Job Level']
+                                
+                                local old_job = party_data[name].main_job
+                                local new_job = p['Main job'] or p['Main Job']
+                                local job_changed = (old_job ~= nil and new_job ~= nil and old_job ~= new_job)
+                                
+                                local new_ml = p['Master Level'] or p['Master level'] or 0
+                                local cached_ml = party_data[name].master_level or 0
+                                if job_changed or party_data[name].master_level == nil or new_ml > cached_ml then
+                                    party_data[name].master_level = new_ml
+                                end
+                                party_data[name].main_level = p['Main job level'] or p['Main Job Level'] or party_data[name].main_level
+                                party_data[name].main_job = new_job or party_data[name].main_job
+                                pm_ui.update()
+                                break
                             end
-                            party_data[name].main_level = p['Main job level'] or p['Main Job Level'] or party_data[name].main_level
-                            party_data[name].main_job = new_job or party_data[name].main_job
-                            pm_ui.update()
-                            break
                         end
                     end
                 end
