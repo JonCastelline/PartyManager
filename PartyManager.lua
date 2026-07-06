@@ -141,8 +141,22 @@ local function clean(s)
 end
 
 local function normalize(name)
-    if not name or name == '' then return nil end
-    return name:lower():ucfirst()
+    local cleaned = clean(name)
+    if not cleaned or cleaned == '' then return nil end
+    return cleaned:lower():ucfirst()
+end
+
+local function is_party_member(name)
+    local party = windower.ffxi.get_party()
+    if not party then return false end
+    local name_norm = normalize(name)
+    for i = 0, 5 do
+        local m = party['p' .. i]
+        if m and m.name and normalize(m.name) == name_norm then
+            return true
+        end
+    end
+    return false
 end
 
 local function log_packet(text)
@@ -167,13 +181,19 @@ local function populate_initial_party_data()
     if player then
         local my_name = normalize(player.name)
         party_data[my_name] = party_data[my_name] or {}
-        party_data[my_name].main_job = player.main_job_id
+        
+        local old_job = party_data[my_name].main_job
+        local new_job = player.main_job_id
+        local job_changed = (old_job ~= nil and old_job ~= new_job)
+        
+        party_data[my_name].main_job = new_job
         party_data[my_name].main_level = player.main_job_level
         party_data[my_name].sub_job = player.sub_job_id
         party_data[my_name].sub_level = player.sub_job_level
+        
         local my_ml = player.master_level or 0
         local cached_my_ml = party_data[my_name].master_level or 0
-        if my_ml > cached_my_ml then
+        if job_changed or party_data[my_name].master_level == nil or my_ml > cached_my_ml then
             party_data[my_name].master_level = my_ml
         end
     end
@@ -190,7 +210,13 @@ local function populate_initial_party_data()
                 local name = normalize(m.name)
                 party_data[name] = party_data[name] or {}
                 if m.job then
-                    party_data[name].main_job = m.job
+                    local old_job = party_data[name].main_job
+                    if old_job ~= m.job then
+                        if old_job ~= nil then
+                            party_data[name].master_level = nil
+                        end
+                        party_data[name].main_job = m.job
+                    end
                 end
                 
                 if m.id and m.id ~= 0 then
@@ -1321,21 +1347,66 @@ end
 ----------------------------------------------------------------------
 
 windower.register_event('incoming chunk', function(id, data)
+    -- Packet 0x00D: PC Update (contains another player's DC status)
+    if id == 0x00D then
+        local p = packets.parse('incoming', data)
+        if p and p['Player'] then
+            local mob = windower.ffxi.get_mob_by_id(p['Player'])
+            if mob and mob.name then
+                local name = normalize(mob.name)
+                if name and is_party_member(name) then
+                    party_data[name] = party_data[name] or {}
+                    
+                    local is_dc = (bit.band(data:byte(35), 0x04) ~= 0)
+                    local old_dc = party_data[name].disconnected or false
+                    if old_dc ~= is_dc then
+                        party_data[name].disconnected = is_dc
+                        pm_ui.update()
+                    end
+                end
+            end
+        end
+    -- Packet 0x037: Player Update (contains local player's DC status)
+    elseif id == 0x037 then
+        local p = packets.parse('incoming', data)
+        if p and p['Player'] then
+            local player = windower.ffxi.get_player()
+            if player and p['Player'] == player.id then
+                local my_name = normalize(player.name)
+                if my_name then
+                    party_data[my_name] = party_data[my_name] or {}
+                    
+                    local is_dc = (bit.band(data:byte(44), 0x04) ~= 0)
+                    local old_dc = party_data[my_name].disconnected or false
+                    if old_dc ~= is_dc then
+                        party_data[my_name].disconnected = is_dc
+                        pm_ui.update()
+                    end
+                end
+            end
+        end
     -- Packet 0x0DD: Party Member Update (contains Master Level)
-    if id == 0x0DD then
+    elseif id == 0x0DD then
         local p = packets.parse('incoming', data)
         if p and p.Name then
             local name = normalize(p.Name)
-            party_data[name] = party_data[name] or {}
-            local new_ml = p['Master Level'] or 0
-            local cached_ml = party_data[name].master_level or 0
-            if new_ml > cached_ml then
-                party_data[name].master_level = new_ml
+            if name then
+                party_data[name] = party_data[name] or {}
+                
+                local old_job = party_data[name].main_job
+                local new_job = p['Main job']
+                local job_changed = (old_job ~= nil and new_job ~= nil and old_job ~= new_job)
+                
+                local new_ml = p['Master Level'] or 0
+                local cached_ml = party_data[name].master_level or 0
+                if job_changed or party_data[name].master_level == nil or new_ml > cached_ml then
+                    party_data[name].master_level = new_ml
+                end
+                party_data[name].main_level = p['Main job level']
+                party_data[name].main_job = new_job
+                pm_ui.update() -- Refresh UI with new data
+                -- log_packet('INCOMING 0x0DD from ' .. name .. ': ' .. dump_packet_fields(p))
             end
-            party_data[name].main_level = p['Main job level']
-            party_data[name].main_job = p['Main job']
-            pm_ui.update() -- Refresh UI with new data
-            -- log_packet('INCOMING 0x0DD from ' .. name .. ': ' .. dump_packet_fields(p))
         end
     end
 
@@ -1351,18 +1422,25 @@ windower.register_event('incoming chunk', function(id, data)
                         local m = party['p' .. i]
                         if m and m.id == p['Target ID'] then
                             local name = normalize(m.name)
-                            party_data[name] = party_data[name] or {}
-                            party_data[name].sub_job = p['Sub job'] or p['Sub Job']
-                            party_data[name].sub_level = p['Sub job level'] or p['Sub Job Level']
-                            local new_ml = p['Master Level'] or p['Master level'] or 0
-                            local cached_ml = party_data[name].master_level or 0
-                            if new_ml > cached_ml then
-                                party_data[name].master_level = new_ml
+                            if name then
+                                party_data[name] = party_data[name] or {}
+                                party_data[name].sub_job = p['Sub job'] or p['Sub Job']
+                                party_data[name].sub_level = p['Sub job level'] or p['Sub Job Level']
+                                
+                                local old_job = party_data[name].main_job
+                                local new_job = p['Main job'] or p['Main Job']
+                                local job_changed = (old_job ~= nil and new_job ~= nil and old_job ~= new_job)
+                                
+                                local new_ml = p['Master Level'] or p['Master level'] or 0
+                                local cached_ml = party_data[name].master_level or 0
+                                if job_changed or party_data[name].master_level == nil or new_ml > cached_ml then
+                                    party_data[name].master_level = new_ml
+                                end
+                                party_data[name].main_level = p['Main job level'] or p['Main Job Level'] or party_data[name].main_level
+                                party_data[name].main_job = new_job or party_data[name].main_job
+                                pm_ui.update()
+                                break
                             end
-                            party_data[name].main_level = p['Main job level'] or p['Main Job Level'] or party_data[name].main_level
-                            party_data[name].main_job = p['Main job'] or p['Main Job'] or party_data[name].main_job
-                            pm_ui.update()
-                            break
                         end
                     end
                 end
@@ -1454,15 +1532,34 @@ windower.register_event('prerender', function()
     if now - last_json_write_time >= 10 then
         write_state_json('STATUS_SNAPSHOT', 'Status snapshot.')
     end
-    local current_pc_count = get_pc_count()
+    local party = windower.ffxi.get_party()
+    local player = windower.ffxi.get_player()
     
     -- Background monitoring for PC departures
-    if settings.enabled then
+    if settings.enabled and party and player then
+        local current_pc_count = get_pc_count()
         if current_pc_count < last_pc_count then
-            write_state_json('MEMBER_LEFT', 'Player left the party.')
+            local current_members = {}
+            for i = 0, 5 do
+                local m = party['p' .. i]
+                if m and m.name and m.name ~= '' then
+                    current_members[normalize(m.name)] = true
+                end
+            end
+            
+            local left_name = "Player"
+            local my_name = normalize(player.name)
+            for name, _ in pairs(party_data) do
+                if name ~= my_name and not current_members[name] then
+                    left_name = name
+                    break
+                end
+            end
+            
+            write_state_json('MEMBER_LEFT', left_name .. ' left the party.')
             cleanup_party_data()
             if settings.auto_trust_resummon and current_state == states.IDLE then
-                windower.add_to_chat(200, 'PartyManager: Player left the party. Initiating reconfiguration.')
+                windower.add_to_chat(200, 'PartyManager: ' .. left_name .. ' left the party. Initiating reconfiguration.')
                 target_player = nil -- Ensure we know it's a resummon
                 
                 -- Check if we need to force sync (target left)
@@ -1638,7 +1735,7 @@ windower.register_event('prerender', function()
                 sync_off_time = os.time()
                 last_msg_time = 0
                 last_action_time = now
-                write_state_json('SYNC_CLEARED', 'Deactivating Level Sync.')
+                write_state_json('STATUS_SNAPSHOT', 'Deactivating Level Sync.')
             end
         else
             windower.add_to_chat(200, 'PartyManager: Sync mode set to none or no valid target found. Skipping sync.')
@@ -1679,7 +1776,7 @@ windower.register_event('prerender', function()
                 windower.add_to_chat(200, 'PartyManager: Injecting Level Sync packet (0x077) for ' .. sync_target_name .. '.')
                 send_level_sync_packet(sync_target_name, 0x06)
                 active_sync_target = normalize(sync_target_name)
-                write_state_json('SYNC_REQUESTED', 'Level sync requested for ' .. sync_target_name)
+                write_state_json('STATUS_SNAPSHOT', 'Level sync requested for ' .. sync_target_name)
                 -- Syncing resets the trust cooldown timer!
                 invite_time = os.time()
                 current_state = states.SUMMONING_TRUSTS
@@ -1709,7 +1806,7 @@ windower.register_event('prerender', function()
             windower.add_to_chat(200, 'PartyManager: There is a 2 minute cooldown for Trusts after party changes. Starting timer.')
             trust_summon_initial = false
             last_msg_time = now
-            write_state_json('TRUST_SUMMON_STARTED', 'Started summoning trusts.')
+            write_state_json('STATUS_SNAPSHOT', 'Started summoning trusts.')
         end
         local elapsed = os.time() - invite_time
         if elapsed < 120 then
@@ -1752,7 +1849,7 @@ windower.register_event('prerender', function()
             current_state = states.STARTING_PULLER
             trust_summon_initial = true
             last_action_time = now
-            write_state_json('TRUST_SUMMON_COMPLETE', 'Trust summoning complete.')
+            write_state_json('STATUS_SNAPSHOT', 'Trust summoning complete.')
         end
 
     elseif current_state == states.STARTING_PULLER then
@@ -1763,6 +1860,7 @@ windower.register_event('prerender', function()
         active_sync_target = nil
         last_action_time = now
         windower.add_to_chat(200, 'PartyManager: Process complete.')
+        write_state_json('PARTY_RESUMED', 'Party manager process complete. Puller started, party resumed.')
     end
 end)
 
