@@ -171,7 +171,11 @@ local function populate_initial_party_data()
         party_data[my_name].main_level = player.main_job_level
         party_data[my_name].sub_job = player.sub_job_id
         party_data[my_name].sub_level = player.sub_job_level
-        party_data[my_name].master_level = player.master_level or 0
+        local my_ml = player.master_level or 0
+        local cached_my_ml = party_data[my_name].master_level or 0
+        if my_ml > cached_my_ml then
+            party_data[my_name].master_level = my_ml
+        end
     end
 
     local party = windower.ffxi.get_party()
@@ -1323,7 +1327,11 @@ windower.register_event('incoming chunk', function(id, data)
         if p and p.Name then
             local name = normalize(p.Name)
             party_data[name] = party_data[name] or {}
-            party_data[name].master_level = p['Master Level']
+            local new_ml = p['Master Level'] or 0
+            local cached_ml = party_data[name].master_level or 0
+            if new_ml > cached_ml then
+                party_data[name].master_level = new_ml
+            end
             party_data[name].main_level = p['Main job level']
             party_data[name].main_job = p['Main job']
             pm_ui.update() -- Refresh UI with new data
@@ -1346,7 +1354,11 @@ windower.register_event('incoming chunk', function(id, data)
                             party_data[name] = party_data[name] or {}
                             party_data[name].sub_job = p['Sub job'] or p['Sub Job']
                             party_data[name].sub_level = p['Sub job level'] or p['Sub Job Level']
-                            party_data[name].master_level = p['Master Level'] or p['Master level'] or party_data[name].master_level
+                            local new_ml = p['Master Level'] or p['Master level'] or 0
+                            local cached_ml = party_data[name].master_level or 0
+                            if new_ml > cached_ml then
+                                party_data[name].master_level = new_ml
+                            end
                             party_data[name].main_level = p['Main job level'] or p['Main Job Level'] or party_data[name].main_level
                             party_data[name].main_job = p['Main job'] or p['Main Job'] or party_data[name].main_job
                             pm_ui.update()
