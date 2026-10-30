@@ -1536,7 +1536,7 @@ windower.register_event('prerender', function()
     local party = windower.ffxi.get_party()
     local player = windower.ffxi.get_player()
     
-    -- Background monitoring for PC departures with 5-second debounce
+    -- Background monitoring for PC departures with 20-second debounce
     if settings.enabled and party and player then
         local player_status = player.status
         if player_status == 4 then
@@ -1568,12 +1568,12 @@ windower.register_event('prerender', function()
                 end
             end
             
-            -- Process pending departures (cancel if back in party, confirm if missing 5s)
+            -- Process pending departures (cancel if back in party, confirm if missing 20s)
             for name, pending in pairs(pending_departures) do
                 if current_members[name] then
                     -- Reappeared in party (was just zoning/warping)
                     pending_departures[name] = nil
-                elseif (now - pending.time) >= 5.0 then
+                elseif (now - pending.time) >= 20.0 then
                     local left_name = pending.name
                     pending_departures[name] = nil
                     
