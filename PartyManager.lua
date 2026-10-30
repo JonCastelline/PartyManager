@@ -130,6 +130,7 @@ local active_sync_target = nil
 
 -- Party member data tracking
 local party_data = {}
+local pending_departures = {}
 
 ----------------------------------------------------------------------
 -- HELPERS
@@ -1535,10 +1536,15 @@ windower.register_event('prerender', function()
     local party = windower.ffxi.get_party()
     local player = windower.ffxi.get_player()
     
-    -- Background monitoring for PC departures
+    -- Background monitoring for PC departures with 5-second debounce
     if settings.enabled and party and player then
-        local current_pc_count = get_pc_count()
-        if current_pc_count < last_pc_count then
+        local player_status = player.status
+        if player_status == 4 then
+            -- Local player is zoning, cancel departure checks
+            pending_departures = {}
+            last_pc_count = get_pc_count()
+        else
+            local current_pc_count = get_pc_count()
             local current_members = {}
             for i = 0, 5 do
                 local m = party['p' .. i]
@@ -1547,31 +1553,45 @@ windower.register_event('prerender', function()
                 end
             end
             
-            local left_name = "Player"
-            local my_name = normalize(player.name)
-            for name, _ in pairs(party_data) do
-                if name ~= my_name and not current_members[name] then
-                    left_name = name
-                    break
+            -- If PC count dropped, queue missing members for departure confirmation
+            if current_pc_count < last_pc_count then
+                local my_name = normalize(player.name)
+                for name, _ in pairs(party_data) do
+                    if name ~= my_name and not current_members[name] then
+                        if not pending_departures[name] then
+                            pending_departures[name] = {
+                                time = now,
+                                name = name
+                            }
+                        end
+                    end
                 end
             end
             
-            write_state_json('MEMBER_LEFT', left_name .. ' left the party.')
-            cleanup_party_data()
-            if settings.auto_trust_resummon and current_state == states.IDLE then
-                windower.add_to_chat(200, 'PartyManager: ' .. left_name .. ' left the party. Initiating reconfiguration.')
-                target_player = nil -- Ensure we know it's a resummon
-                
-                -- Check if we need to force sync (target left)
-                -- We always force sync here if auto_level_sync is on OR if current sync is invalid
-                current_state = states.STOPPING_PULLER
-                last_action_time = now
-                -- Default to skipping cooldown; will be reset if we sync
-                invite_time = os.time() - 120
+            -- Process pending departures (cancel if back in party, confirm if missing 5s)
+            for name, pending in pairs(pending_departures) do
+                if current_members[name] then
+                    -- Reappeared in party (was just zoning/warping)
+                    pending_departures[name] = nil
+                elseif (now - pending.time) >= 5.0 then
+                    local left_name = pending.name
+                    pending_departures[name] = nil
+                    
+                    write_state_json('MEMBER_LEFT', left_name .. ' left the party.')
+                    cleanup_party_data()
+                    if settings.auto_trust_resummon and current_state == states.IDLE then
+                        windower.add_to_chat(200, 'PartyManager: ' .. left_name .. ' left the party. Initiating reconfiguration.')
+                        target_player = nil -- Ensure we know it's a resummon
+                        current_state = states.STOPPING_PULLER
+                        last_action_time = now
+                        invite_time = os.time() - 120
+                    end
+                end
             end
+            
+            -- Keep last_pc_count in sync
+            last_pc_count = current_pc_count
         end
-        -- Always update last_pc_count to keep it in sync with the current party state
-        last_pc_count = current_pc_count
     end
 
     if not settings.enabled or current_state == states.IDLE then return end
@@ -1867,6 +1887,11 @@ end)
 -- Addon Load and Login Initialization
 -- log_packet('--- PartyManager Log Initialized ---')
 populate_initial_party_data()
+
+windower.register_event('zone change', function(new_zone, old_zone)
+    pending_departures = {}
+    last_pc_count = get_pc_count()
+end)
 
 windower.register_event('login', function()
     populate_initial_party_data()
