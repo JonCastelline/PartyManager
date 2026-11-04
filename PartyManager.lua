@@ -147,6 +147,19 @@ local function normalize(name)
     return cleaned:lower():ucfirst()
 end
 
+local function is_town_zone(zone_id)
+    if not zone_id or zone_id == 0 then return false end
+    local z = res.zones and res.zones[zone_id]
+    return not (z and z.can_pet)
+end
+
+local function is_in_town()
+    local info = windower.ffxi.get_info()
+    if not info or not info.logged_in then return true end
+    if info.mog_house then return true end
+    return is_town_zone(info.zone)
+end
+
 local function is_party_member(name)
     local party = windower.ffxi.get_party()
     if not party then return false end
@@ -1536,11 +1549,11 @@ windower.register_event('prerender', function()
     local party = windower.ffxi.get_party()
     local player = windower.ffxi.get_player()
     
-    -- Background monitoring for PC departures with 20-second debounce
+    -- Background monitoring for PC departures with 20-second debounce (suspended in towns)
     if settings.enabled and party and player then
         local player_status = player.status
-        if player_status == 4 then
-            -- Local player is zoning, cancel departure checks
+        if player_status == 4 or is_in_town() then
+            -- Local player is zoning or in a town, cancel departure checks
             pending_departures = {}
             last_pc_count = get_pc_count()
         else
@@ -1595,6 +1608,11 @@ windower.register_event('prerender', function()
     end
 
     if not settings.enabled or current_state == states.IDLE then return end
+    if is_in_town() then
+        current_state = states.IDLE
+        target_player = nil
+        return
+    end
     if now - last_action_time < 2 then return end
     local player = windower.ffxi.get_player()
     if not player then return end
