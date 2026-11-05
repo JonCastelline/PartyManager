@@ -1,7 +1,38 @@
 -- partymanager_ui.lua
 
 local texts = require('texts')
+local res = require('resources')
 local M = {}
+
+-- Build trust name set from resources for 100% reliable identification
+local trust_names = {}
+if res and res.spells then
+    for _, spell in pairs(res.spells) do
+        if spell.type == 'Trust' then
+            if spell.party_name then
+                trust_names[spell.party_name:lower()] = true
+            end
+            if spell.en then
+                trust_names[spell.en:lower()] = true
+            end
+        end
+    end
+end
+
+local function is_trust(name)
+    if not name then return false end
+    local clean_name = name:lower()
+    if trust_names[clean_name] then return true end
+    local base_name = clean_name:gsub(' %(.+%)$', ''):gsub(' ii$', ''):gsub(' iii$', '')
+    return trust_names[base_name] == true
+end
+
+local function is_pc(m)
+    if not m or not m.name or m.name == '' then return false end
+    if is_trust(m.name) then return false end
+    if m.mob and m.mob.is_npc then return false end
+    return true
+end
 
 ---------------------------------------------------------------------------
 -- Layout constants
@@ -279,10 +310,8 @@ local function get_party_pcs()
     if not party then return pcs end
     for i = 0, 5 do
         local m = party['p' .. i]
-        if m and m.name and m.name ~= '' then
-            if not m.mob or not m.mob.is_npc then
-                pcs[#pcs+1] = m.name
-            end
+        if is_pc(m) then
+            pcs[#pcs+1] = m.name
         end
     end
     return pcs
@@ -295,12 +324,9 @@ local function get_party_trusts()
     if not party then return trusts end
     for i = 1, 5 do
         local m = party['p' .. i]
-        if m and m.id and m.id ~= 0 then
-            -- Use full mob data for accurate names (handles UC, II, etc.)
-            local mob = windower.ffxi.get_mob_by_id(m.id)
-            if mob and mob.is_npc then
-                trusts[#trusts+1] = mob.name
-            end
+        if m and m.name and m.name ~= '' and (is_trust(m.name) or (m.mob and m.mob.is_npc)) then
+            local mob = (m.id and m.id ~= 0) and windower.ffxi.get_mob_by_id(m.id) or nil
+            trusts[#trusts+1] = (mob and mob.name) or m.name
         end
     end
     return trusts
@@ -318,10 +344,10 @@ local function get_party_slots()
     for i = 0, 5 do
         local m = party['p' .. i]
         if m and m.name and m.name ~= '' then
-            local mob = m.id and m.id ~= 0 and windower.ffxi.get_mob_by_id(m.id) or nil
-            local is_npc = mob and mob.is_npc or false
-            local display_name = (is_npc and mob and mob.name) or m.name
-            slots[i] = {name = display_name, is_trust = is_npc}
+            local mob = (m.id and m.id ~= 0) and windower.ffxi.get_mob_by_id(m.id) or nil
+            local trust_flag = is_trust(m.name) or (mob and mob.is_npc) or false
+            local display_name = (trust_flag and mob and mob.name) or m.name
+            slots[i] = {name = display_name, is_trust = trust_flag}
         end
     end
     return slots
