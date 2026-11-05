@@ -160,6 +160,36 @@ local function is_in_town()
     return is_town_zone(info.zone)
 end
 
+-- Build trust name set from resources for 100% reliable identification
+local trust_names = {}
+if res and res.spells then
+    for _, spell in pairs(res.spells) do
+        if spell.type == 'Trust' then
+            if spell.party_name then
+                trust_names[spell.party_name:lower()] = true
+            end
+            if spell.en then
+                trust_names[spell.en:lower()] = true
+            end
+        end
+    end
+end
+
+local function is_trust(name)
+    if not name then return false end
+    local clean_name = name:lower()
+    if trust_names[clean_name] then return true end
+    local base_name = clean_name:gsub(' %(.+%)$', ''):gsub(' ii$', ''):gsub(' iii$', '')
+    return trust_names[base_name] == true
+end
+
+local function is_pc(m)
+    if not m or not m.name or m.name == '' then return false end
+    if is_trust(m.name) then return false end
+    if m.mob and m.mob.is_npc then return false end
+    return true
+end
+
 local function is_party_member(name)
     local party = windower.ffxi.get_party()
     if not party then return false end
@@ -219,25 +249,23 @@ local function populate_initial_party_data()
 
     for i = 1, 5 do
         local m = party['p' .. i]
-        if m and m.name and m.name ~= '' then
-            if not m.mob or not m.mob.is_npc then
-                local name = normalize(m.name)
-                party_data[name] = party_data[name] or {}
-                if m.job then
-                    local old_job = party_data[name].main_job
-                    if old_job ~= m.job then
-                        if old_job ~= nil then
-                            party_data[name].master_level = nil
-                        end
-                        party_data[name].main_job = m.job
+        if is_pc(m) then
+            local name = normalize(m.name)
+            party_data[name] = party_data[name] or {}
+            if m.job then
+                local old_job = party_data[name].main_job
+                if old_job ~= m.job then
+                    if old_job ~= nil then
+                        party_data[name].master_level = nil
                     end
+                    party_data[name].main_job = m.job
                 end
-                
-                if m.id and m.id ~= 0 then
-                    local mob = windower.ffxi.get_mob_by_id(m.id)
-                    local idx = mob and mob.index or 0
-                    targets_to_check[#targets_to_check + 1] = {id = m.id, index = idx}
-                end
+            end
+            
+            if m.id and m.id ~= 0 then
+                local mob = windower.ffxi.get_mob_by_id(m.id)
+                local idx = mob and mob.index or 0
+                targets_to_check[#targets_to_check + 1] = {id = m.id, index = idx}
             end
         end
     end
@@ -281,10 +309,8 @@ local function get_pc_count()
     local count = 0
     for i = 0, 5 do
         local m = party['p' .. i]
-        if m and m.name and m.name ~= '' then
-            if not m.mob or not m.mob.is_npc then
-                count = count + 1
-            end
+        if is_pc(m) then
+            count = count + 1
         end
     end
     return count
@@ -312,12 +338,10 @@ local function get_carry_count()
     local count = 0
     for i = 0, 5 do
         local m = party['p' .. i]
-        if m and m.name and m.name ~= '' then
-            if not m.mob or not m.mob.is_npc then
-                local data = party_data[normalize(m.name)]
-                if data and data.is_carry then
-                    count = count + 1
-                end
+        if is_pc(m) then
+            local data = party_data[normalize(m.name)]
+            if data and data.is_carry then
+                count = count + 1
             end
         end
     end
@@ -357,25 +381,23 @@ local function get_role_count(role_name)
     -- Check other PCs
     for i = 1, 5 do
         local m = party['p' .. i]
-        if m and m.name and m.name ~= '' then
-            if not m.mob or not m.mob.is_npc then
-                local name = normalize(m.name)
-                local data = party_data[name]
+        if is_pc(m) then
+            local name = normalize(m.name)
+            local data = party_data[name]
+            
+            if not (data and data.is_carry) then
+                local role = nil
+                if data and data.requested_role then
+                    role = data.requested_role
+                else
+                    role = get_role_for_job(m.job)
+                    if not role and data and data.main_job then
+                        role = get_role_for_job(data.main_job)
+                    end
+                end
                 
-                if not (data and data.is_carry) then
-                    local role = nil
-                    if data and data.requested_role then
-                        role = data.requested_role
-                    else
-                        role = get_role_for_job(m.job)
-                        if not role and data and data.main_job then
-                            role = get_role_for_job(data.main_job)
-                        end
-                    end
-                    
-                    if role == role_name then
-                        count = count + 1
-                    end
+                if role == role_name then
+                    count = count + 1
                 end
             end
         end
@@ -429,7 +451,7 @@ local function are_trusts_out()
     if not party then return false end
     for i = 1, 5 do
         local m = party['p' .. i]
-        if m and m.mob and m.mob.is_npc then
+        if m and m.name and m.name ~= '' and (is_trust(m.name) or (m.mob and m.mob.is_npc)) then
             return true
         end
     end
@@ -443,13 +465,13 @@ local function cleanup_party_data()
     local current_members = {}
     for i = 0, 5 do
         local m = party['p' .. i]
-        if m and m.name and m.name ~= '' then
+        if is_pc(m) then
             current_members[normalize(m.name)] = true
         end
     end
     
     for name, _ in pairs(party_data) do
-        if not current_members[name] then
+        if not current_members[name] or is_trust(name) then
             party_data[name] = nil
         end
     end
@@ -496,15 +518,12 @@ local function get_lowest_ml_pc()
     
     for i = 0, 5 do
         local m = party['p' .. i]
-        if m and m.name and m.name ~= '' then
-            -- If mob info is available, check if it's an NPC (trust).
-            if not m.mob or not m.mob.is_npc then
-                local data = party_data[normalize(m.name)]
-                if data and data.master_level and data.master_level >= 0 then
-                    if data.master_level < lowest_ml then
-                        lowest_ml = data.master_level
-                        lowest_name = normalize(m.name)
-                    end
+        if is_pc(m) then
+            local data = party_data[normalize(m.name)]
+            if data and data.master_level and data.master_level >= 0 then
+                if data.master_level < lowest_ml then
+                    lowest_ml = data.master_level
+                    lowest_name = normalize(m.name)
                 end
             end
         end
@@ -586,37 +605,35 @@ local function get_dynamic_trust_list(force_verbose, override_pc_roles, override
         if party then
             for i = 1, 5 do
                 local m = party['p' .. i]
-                if m and m.name and m.name ~= '' then
-                    if not m.mob or not m.mob.is_npc then
-                        local name = normalize(m.name)
-                        local data = party_data[name]
+                if is_pc(m) then
+                    local name = normalize(m.name)
+                    local data = party_data[name]
+                    
+                    local debug_str = 'PartyManager: [DEBUG] PC: ' .. name
+                    
+                    if data and data.is_carry then
+                        if verbose then windower.add_to_chat(200, debug_str .. ' (Carry) - Skipping role detection.') end
+                    else
+                        local job_id = m.job
+                        local role = get_role_for_job(job_id)
+                        local source = 'get_party()'
                         
-                        local debug_str = 'PartyManager: [DEBUG] PC: ' .. name
-                        
-                        if data and data.is_carry then
-                            if verbose then windower.add_to_chat(200, debug_str .. ' (Carry) - Skipping role detection.') end
-                        else
-                            local job_id = m.job
-                            local role = get_role_for_job(job_id)
-                            local source = 'get_party()'
-                            
-                            if not role and data and data.main_job then
-                                job_id = data.main_job
-                                role = get_role_for_job(job_id)
-                                source = '0x0DD'
-                            end
-                            
-                            if data and data.requested_role then
-                                role = data.requested_role
-                                source = 'Flag'
-                            end
-                            
-                            if verbose then
-                                windower.add_to_chat(200, debug_str .. ' JobID: ' .. tostring(job_id or 0) .. ' -> Role: ' .. (role or 'None') .. ' (Source: ' .. source .. ')')
-                            end
-                            
-                            if role then covered_roles[role] = true end
+                        if not role and data and data.main_job then
+                            job_id = data.main_job
+                            role = get_role_for_job(job_id)
+                            source = '0x0DD'
                         end
+                        
+                        if data and data.requested_role then
+                            role = data.requested_role
+                            source = 'Flag'
+                        end
+                        
+                        if verbose then
+                            windower.add_to_chat(200, debug_str .. ' JobID: ' .. tostring(job_id or 0) .. ' -> Role: ' .. (role or 'None') .. ' (Source: ' .. source .. ')')
+                        end
+                        
+                        if role then covered_roles[role] = true end
                     end
                 end
             end
@@ -730,7 +747,7 @@ local function validate_composition(new_player_role, is_carry)
     local party = windower.ffxi.get_party()
     for i = 1, 5 do
         local m = party['p' .. i]
-        if m and m.name and m.name ~= '' and (not m.mob or not m.mob.is_npc) then
+        if is_pc(m) then
             local name = normalize(m.name)
             local data = party_data[name]
             if not (data and data.is_carry) then
@@ -1297,7 +1314,7 @@ write_state_json = function(event_type, event_msg)
         -- Other PCs
         for i = 1, 5 do
             local m = party['p' .. i]
-            if m and m.name and m.name ~= '' and (not m.mob or not m.mob.is_npc) then
+            if is_pc(m) then
                 local name = normalize(m.name)
                 local data = party_data[name]
                 local role = nil
@@ -1368,7 +1385,7 @@ windower.register_event('incoming chunk', function(id, data)
             local mob = windower.ffxi.get_mob_by_id(p['Player'])
             if mob and mob.name then
                 local name = normalize(mob.name)
-                if name and is_party_member(name) then
+                if name and is_party_member(name) and not is_trust(name) then
                     party_data[name] = party_data[name] or {}
                     
                     local is_dc = (bit.band(data:byte(35), 0x04) ~= 0)
@@ -1404,7 +1421,7 @@ windower.register_event('incoming chunk', function(id, data)
         local p = packets.parse('incoming', data)
         if p and p.Name then
             local name = normalize(p.Name)
-            if name then
+            if name and not is_trust(name) then
                 party_data[name] = party_data[name] or {}
                 
                 local old_job = party_data[name].main_job
@@ -1434,9 +1451,9 @@ windower.register_event('incoming chunk', function(id, data)
                 if party then
                     for i = 1, 5 do
                         local m = party['p' .. i]
-                        if m and m.id == p['Target ID'] then
+                        if m and m.id == p['Target ID'] and is_pc(m) then
                             local name = normalize(m.name)
-                            if name then
+                            if name and not is_trust(name) then
                                 party_data[name] = party_data[name] or {}
                                 party_data[name].sub_job = p['Sub job'] or p['Sub Job']
                                 party_data[name].sub_level = p['Sub job level'] or p['Sub Job Level']
@@ -1561,7 +1578,7 @@ windower.register_event('prerender', function()
             local current_members = {}
             for i = 0, 5 do
                 local m = party['p' .. i]
-                if m and m.name and m.name ~= '' then
+                if is_pc(m) then
                     current_members[normalize(m.name)] = true
                 end
             end
@@ -1570,7 +1587,7 @@ windower.register_event('prerender', function()
             if current_pc_count < last_pc_count then
                 local my_name = normalize(player.name)
                 for name, _ in pairs(party_data) do
-                    if name ~= my_name and not current_members[name] then
+                    if name ~= my_name and not current_members[name] and not is_trust(name) then
                         if not pending_departures[name] then
                             pending_departures[name] = {
                                 time = now,
@@ -1583,21 +1600,23 @@ windower.register_event('prerender', function()
             
             -- Process pending departures (cancel if back in party, confirm if missing 20s)
             for name, pending in pairs(pending_departures) do
-                if current_members[name] then
-                    -- Reappeared in party (was just zoning/warping)
+                if current_members[name] or is_trust(name) then
+                    -- Reappeared in party (was just zoning/warping) or is a trust
                     pending_departures[name] = nil
                 elseif (now - pending.time) >= 20.0 then
                     local left_name = pending.name
                     pending_departures[name] = nil
                     
-                    write_state_json('MEMBER_LEFT', left_name .. ' left the party.')
-                    cleanup_party_data()
-                    if settings.auto_trust_resummon and current_state == states.IDLE then
-                        windower.add_to_chat(200, 'PartyManager: ' .. left_name .. ' left the party. Initiating reconfiguration.')
-                        target_player = nil -- Ensure we know it's a resummon
-                        current_state = states.STOPPING_PULLER
-                        last_action_time = now
-                        invite_time = os.time() - 120
+                    if not is_trust(left_name) then
+                        write_state_json('MEMBER_LEFT', left_name .. ' left the party.')
+                        cleanup_party_data()
+                        if settings.auto_trust_resummon and current_state == states.IDLE then
+                            windower.add_to_chat(200, 'PartyManager: ' .. left_name .. ' left the party. Initiating reconfiguration.')
+                            target_player = nil -- Ensure we know it's a resummon
+                            current_state = states.STOPPING_PULLER
+                            last_action_time = now
+                            invite_time = os.time() - 120
+                        end
                     end
                 end
             end
@@ -1864,7 +1883,9 @@ windower.register_event('prerender', function()
         local party = windower.ffxi.get_party()
         for i = 1, 5 do
             local m = party['p' .. i]
-            if m and m.mob and m.mob.is_npc then current_trusts = current_trusts + 1 end
+            if m and m.name and m.name ~= '' and (is_trust(m.name) or (m.mob and m.mob.is_npc)) then
+                current_trusts = current_trusts + 1
+            end
         end
 
         if trust_summon_index <= #trust_list and current_trusts < slots_available then
